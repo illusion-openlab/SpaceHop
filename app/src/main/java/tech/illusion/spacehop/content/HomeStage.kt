@@ -19,40 +19,42 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.random.Random
 import tech.illusion.spacehop.game.ChargeCurve
 import tech.illusion.spacehop.game.DifficultyCurve
 import tech.illusion.spacehop.game.LandingJudge
 import tech.illusion.spacehop.game.LandingResult
 import tech.illusion.spacehop.game.PlatformSpawner
+import tech.illusion.spacehop.game.PlatformSpec
 import tech.illusion.spacehop.game.RunState
 import tech.illusion.spacehop.game.ScoreRules
+import tech.illusion.spacehop.game.StageBoard
+import tech.illusion.spacehop.game.StageBoardState
 
 private const val TAG = "SpaceHop"
+private const val START_PLATFORM_RADIUS_M = 0.09f
 
-/**
- * Task 7 gate: a single charge → fly → land/fall loop, no infinite scroll yet (that's
- * Task 8) and no panels yet (Task 10). Landing on the (fixed) next platform just leaves the
- * character there; a miss falls and stays fallen — there is no restart until Task 10's
- * result panel exists.
- */
+private fun freshBoardState(spawner: PlatformSpawner): StageBoardState {
+    val start = PlatformSpec(0, 0f, START_PLATFORM_RADIUS_M, START_PLATFORM_RADIUS_M * 0.35f, 0f)
+    return StageBoardState(platforms = listOf(start, spawner.spawnNext(1, 0)), current = start)
+}
+
+/** Task 8 gate: the infinite loop. No panels yet (Task 10) — a miss just falls and the run
+ * stays dead until the process restarts, since there is no result panel to retry from. */
 @Composable
 fun HomeStage() {
     val hmd = remember { HMDTrackingProvider() }
     val mats = remember { StageMaterials() }
     val anchor = remember { Entity() }
     val indicatorBalls = remember { IndicatorBallsRenderer() }
+    val trail = remember { TrailRenderer() }
+    val sfx = remember { Sfx() }
+    val spawner = remember { PlatformSpawner(Random.Default) }
+    val boardAnimator = remember { StageBoardAnimator(mats) }
     var heightAdjustM by remember { mutableFloatStateOf(0f) }
     var runState by remember { mutableStateOf(RunState()) }
+    var boardState by remember { mutableStateOf(freshBoardState(spawner)) }
     var characterController by remember { mutableStateOf<CharacterController?>(null) }
-    var currentPlatform by remember {
-        mutableStateOf(PlatformSpawner().spawnNext(index = 1, consecutiveJumps = 0))
-    }
-    // Built once at a nominal 1m radius and resized via setScaleVector — never recreated.
-    // This is deliberate: there is no verified "remove a child entity" API in this workspace
-    // (only `SpatialViewContent.removeEntity` for top-level entities), so Task 8's infinite
-    // scroll reuses these two entities forever instead of destroying/recreating them.
-    var currentPlatformEntity by remember { mutableStateOf<Entity?>(null) }
-    var nextPlatformEntity by remember { mutableStateOf<Entity?>(null) }
 
     DisposableEffect(hmd) {
         val result = hmd.start()
@@ -63,9 +65,6 @@ fun HomeStage() {
     LaunchedEffect(hmd) {
         repeat(StageCalibration.CALIBRATION_POLLS) {
             val head = hmd.latestData.hmdPose.position
-            // Not just "!= ZERO" — see Task 6 Step 2's StageCalibration.isPlausibleHeadHeight:
-            // a non-zero-but-implausible reading must not be trusted either, or the board ends
-            // up too high or too low.
             if (head != Vector3.ZERO && StageCalibration.isPlausibleHeadHeight(head.y)) {
                 heightAdjustM = head.y - StageCalibration.NOMINAL_EYE_HEIGHT_M
                 return@LaunchedEffect
@@ -83,22 +82,29 @@ fun HomeStage() {
         PinchChargeController.start(onRelease = { cappedHeldMillis ->
             val controller = characterController ?: return@start
             if (!runState.isAlive) return@start
+            trail.clear()
+            sfx.play(HopSfxEvent.LAUNCH)
             val launchDistance = ChargeCurve.launchDistanceMeters(
                 cappedHeldMillis,
                 minDistance = DifficultyCurve.minDistanceMeters(runState.jumpsCompleted),
                 maxDistance = DifficultyCurve.maxDistanceMeters(runState.jumpsCompleted),
             )
             CoroutineScope(Dispatchers.Main).launch {
-                controller.flyTo(launchDistance) { }
-                val result = LandingJudge.judge(launchDistance, currentPlatform)
+                controller.flyTo(launchDistance) { local -> trail.sample(local) }
+                val result = LandingJudge.judge(launchDistance, boardState.current)
                 runState = ScoreRules.applyLanding(runState, result)
-                when (result) {
-                    LandingResult.MISS -> controller.fall()
-                    else -> Unit
+                if (result == LandingResult.MISS) {
+                    sfx.play(HopSfxEvent.FELL)
+                    controller.fall()
+                    return@launch
                 }
+                sfx.play(if (result == LandingResult.PERFECT) HopSfxEvent.LANDED_PERFECT else HopSfxEvent.LANDED_SUCCESS)
+                boardState = StageBoard.advance(boardState, spawner, consecutiveJumps = runState.jumpsCompleted)
+                boardAnimator.animateAdvance(boardState)
+                controller.setIdlePosition(Vector3(0f, 0.05f, 0f))
             }
         })
-        onDispose { PinchChargeController.stop() }
+        onDispose { PinchChargeController.stop(); sfx.release() }
     }
 
     LaunchedEffect(Unit) {
@@ -118,29 +124,11 @@ fun HomeStage() {
                 ?.setPosition(StageCalibration.boardPosition(heightAdjustM))
             content.addEntity(anchor)
             indicatorBalls.build(content)
+            trail.build(content)
 
-            // Nominal 1m-radius mesh, shared by both platform entities — actual footprint size
-            // comes entirely from TransformComponent.setScaleVector (X/Z only, Y stays 1 so
-            // platform height never changes). Task 8 relies on being able to resize these two
-            // entities in place; building them at a fixed nominal radius here is what makes
-            // that possible without ever creating a second mesh.
             val nominalPlatformMesh = StageMeshes.platformMesh(radiusMeters = 1f)
-
-            val current = ModelEntity(nominalPlatformMesh, mats.newPlatformMaterial())
-            current.components[TransformComponent::class.java]?.apply {
-                setPosition(Vector3(0f, 0f, 0f))
-                setScaleVector(Vector3(0.09f, 1f, 0.09f))
-            }
-            anchor.addChild(current)
-            currentPlatformEntity = current
-
-            val next = ModelEntity(nominalPlatformMesh, mats.newPlatformMaterial())
-            next.components[TransformComponent::class.java]?.apply {
-                setPosition(Vector3(currentPlatform.lateralOffsetMeters, 0f, -currentPlatform.distanceFromPreviousMeters))
-                setScaleVector(Vector3(currentPlatform.footprintRadiusMeters, 1f, currentPlatform.footprintRadiusMeters))
-            }
-            anchor.addChild(next)
-            nextPlatformEntity = next
+            boardAnimator.build(anchor, nominalPlatformMesh)
+            boardAnimator.placeInstant(boardState)
 
             val charMesh = StageMeshes.characterMesh(radiusMeters = 0.05f)
             val character = ModelEntity(charMesh, mats.character)
