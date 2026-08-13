@@ -16,3 +16,21 @@
 - 截图:`.spatialsdk/ui-verify/round2-diag.png`
 - 结果:**通过**(平台/角色渲染正确,进程健康)。记录此 `pico-cli` 假阴性现象,供后续会话在这台设备负载高时参考——遇到同样报错先查 `pidof` + `logcat` 里的 `FATAL EXCEPTION`,不要立即当成崩溃处理
 - 无限模式的实际手感(蓄力精度、连击、摔落结束的观感、`animateAdvance` 的滑动/淡入观感)仍未真机验证,留给用户试玩确认
+
+## 第 3 轮 — 2026-08-13 — 三块面板(门禁 B, Task 10)
+
+### 第 1 次尝试:确认到一个真实 Blocker
+
+- 截图 `round3-start-page-retry.png` 清晰显示的是**本项目自己的**内容(橙色角色球 + 蓝色平台,SpaceLianliankan 完全是另一种画风,不会认错)。`start_page` 面板(灰色玻璃卡片)渲染出来了,但:
+  - **Blocker**:`start_title`/`start_best_score`/`start_button` 三个元素**完全没有渲染任何文字或按钮**,只有一张空玻璃卡片
+  - **Blocker**:面板与"当前平台"完全重叠(两者都在 `anchor` 局部原点,没有分开摆放),角色球和平台直接从面板里"穿"出来
+- 定位:`HomeStage.kt` 里 `attachments.entity(PRIMARY_PANEL)?.let { anchor.addChild(it) }`从未给面板设置独立位置,默认落在锚点原点——跟"当前平台"的位置完全一样。这很可能是文字消失的根因:面板和不透明的 3D 几何体挤在同一深度,深度测试冲突下面板的文字层被遮住
+- 修复:给 `PRIMARY_PANEL` 加一个朝玩家方向的 Z 偏移(`PRIMARY_PANEL_FORWARD_OFFSET_M = 0.3f`),让它摆在舞台正前方、玩家和平台之间(呼应设计文档原意),不再跟平台共享同一个位置
+
+### 第 2 轮验证:设备持续被其它会话占用,未能拿到确认结果
+
+- 修复后重新编译(`BUILD SUCCESSFUL`),连续 3 次尝试上机确认,但这台模拟器这段时间被其它会话(至少 `SpaceGomoku`、`SpaceLianliankan`)高频占用:
+  - 尝试 1:`pico-cli app launch` 报错;截图拍到的是 `SpaceLianliankan` 的关卡界面(对方会话的窗口在前台)
+  - 尝试 2:改用 `logcat` 里 `pkg=...,visb=true,focus=true` 这行确认焦点归属——本次没有任何应用拿到焦点(`resolved focus package` 为空),跳过截图
+  - 尝试 3:`adb shell pidof` 直接查不到进程(`NO_PID`)——这次是真的没启动起来,不只是焦点被抢
+- 按"不要死等、不要连续重试"的原则,到此停止,不继续抢锁。**修复已提交,但门禁 B 第 3 轮的"面板不再被平台遮挡、文字正常显示"这一条尚未在设备上得到确认**,需要等这台模拟器空闲后补跑一次。`hud`/`result_panel` 两张截图(依赖临时调试硬改 `phase` 初始值)也还没有开始做,同样卡在设备可用性上，不是代码没写。

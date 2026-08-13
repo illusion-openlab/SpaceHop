@@ -43,6 +43,7 @@ private const val TAG = "SpaceHop"
 private const val PRIMARY_PANEL = "primary"
 private const val SIDE_PANEL = "side"
 private const val SIDE_OFFSET_M = 0.32f
+private const val PRIMARY_PANEL_FORWARD_OFFSET_M = 0.3f
 
 /** Mirrors the design doc's "起始态" as this run's idle/ready state, not literally re-showing
  * a start page every retry — "再来一局" restarts play directly (design-contract.md decision,
@@ -170,7 +171,16 @@ fun HomeStage() {
                 it.setIdlePosition(Vector3(0f, 0.05f, 0f))
             }
 
-            attachments.entity(PRIMARY_PANEL)?.let { anchor.addChild(it) }
+            attachments.entity(PRIMARY_PANEL)?.let {
+                // Floats in front of the stage, between the player and the platforms — NOT
+                // at the anchor origin, which is where the current platform sits (+Z here is
+                // toward the viewer, since -Z is established elsewhere as "away from player").
+                // Coincident with the platform was a confirmed Gate B round 3 Blocker: the
+                // panel and the platform/character z-fought and the panel's text never
+                // rendered as a result.
+                it.components[TransformComponent::class.java]?.setPosition(Vector3(0f, 0f, PRIMARY_PANEL_FORWARD_OFFSET_M))
+                anchor.addChild(it)
+            }
             attachments.entity(SIDE_PANEL)?.let {
                 it.components[TransformComponent::class.java]?.setPosition(Vector3(SIDE_OFFSET_M, 0f, 0f))
                 anchor.addChild(it)
