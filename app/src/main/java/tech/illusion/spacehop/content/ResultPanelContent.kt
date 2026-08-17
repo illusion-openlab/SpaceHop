@@ -9,9 +9,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.pico.spatial.ui.design.Button
+import com.pico.spatial.ui.design.ButtonDefaults
 import com.pico.spatial.ui.design.HorizontalDivider
 import com.pico.spatial.ui.design.PicoTheme
 import com.pico.spatial.ui.design.Text
@@ -31,28 +33,37 @@ fun ResultPanelContent(
     Column(
         modifier = Modifier
             .width(320.dp)
-            .clip(RoundedCornerShape(20.dp))
+            .clip(RoundedCornerShape(PanelStyle.CardCornerRadius))
             .backgroundMaterial(true, Material.Regular)
             .padding(28.dp),
     ) {
         Text(
             text = if (isNewRecord) "新纪录！" else "本局结束",
             style = PicoTheme.typography.headlineLarge,
-            color = PicoTheme.colorScheme.labelPrimary,
+            // Celebratory color only on an actual new record — a plain run stays neutral so the
+            // accent keeps meaning instead of showing on every result.
+            color = if (isNewRecord) PanelStyle.Accent else PicoTheme.colorScheme.labelPrimary,
             modifier = Modifier.padding(bottom = 12.dp),
         )
-        ResultRow("本局分数", score.toString())
-        ResultRow("最高连击", "x$bestCombo")
-        ResultRow("历史最高", bestScore.toString())
+        // Single-accent palette (option A): the accent marks this run's score, matching the HUD
+        // readout and the start page's best-score chip. Combo and all-time best stay neutral —
+        // neither is "the score," and giving every stat its own color read as cluttered.
+        ResultRow("本局分数", score.toString(), PanelStyle.Accent)
+        ResultRow("最高连击", "x$bestCombo", PicoTheme.colorScheme.labelPrimary)
+        ResultRow("历史最高", bestScore.toString(), PicoTheme.colorScheme.labelPrimary)
         HorizontalDivider(color = PicoTheme.colorScheme.dividerLine)
-        Button(onClick = onRetry, modifier = Modifier.fillMaxWidth().padding(top = 16.dp)) {
+        Button(
+            onClick = onRetry,
+            colors = ButtonDefaults.buttonColors(containerColor = PanelStyle.Accent),
+            modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+        ) {
             Text(text = "再来一局", style = PicoTheme.typography.labelLarge)
         }
     }
 }
 
 @Composable
-private fun ResultRow(label: String, value: String) {
+private fun ResultRow(label: String, value: String, valueColor: Color) {
     Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
         Text(
             text = label,
@@ -63,7 +74,7 @@ private fun ResultRow(label: String, value: String) {
         Text(
             text = value,
             style = PicoTheme.typography.titleMedium,
-            color = PicoTheme.colorScheme.labelPrimary,
+            color = valueColor,
             textAlign = TextAlign.End,
             modifier = Modifier.fillMaxWidth(),
         )

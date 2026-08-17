@@ -18,6 +18,7 @@ object ScoreRules {
             state.copy(
                 score = state.score + gained,
                 comboStreak = newStreak,
+                bestComboStreak = maxOf(state.bestComboStreak, newStreak),
                 jumpsCompleted = state.jumpsCompleted + 1,
             )
         }

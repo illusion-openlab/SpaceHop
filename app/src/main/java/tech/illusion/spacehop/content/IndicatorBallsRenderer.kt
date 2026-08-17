@@ -1,6 +1,7 @@
 package tech.illusion.spacehop.content
 
 import com.pico.spatial.core.container.SpatialViewContent
+import com.pico.spatial.core.ecs.Entity
 import com.pico.spatial.core.ecs.ModelEntity
 import com.pico.spatial.core.ecs.TransformComponent
 import com.pico.spatial.core.ecs.resource.MeshResource
@@ -15,6 +16,13 @@ private const val BALL_RADIUS_M = 0.01f
  * stays idle grey. */
 class IndicatorBallsRenderer {
 
+    /** Identity-transform reference added at content root, purely so raw Stage-space hand
+     * joint positions can be converted into SpatialView's coordinate space (per SDK hand
+     * tracking docs) — DataProvider tracking data is Stage-space, but `content.addEntity`
+     * puts these balls in SpatialView space (origin at the view's own bounding-box center,
+     * not the floor), so setting raw joint positions directly puts the balls nowhere near
+     * the real hand. */
+    private lateinit var stageSpaceRoot: Entity
     private lateinit var leftThumbBall: ModelEntity
     private lateinit var leftIndexBall: ModelEntity
     private lateinit var rightThumbBall: ModelEntity
@@ -25,6 +33,8 @@ class IndicatorBallsRenderer {
     private lateinit var rightIndexMat: PhysicallyBasedMaterial
 
     fun build(content: SpatialViewContent) {
+        stageSpaceRoot = Entity()
+        content.addEntity(stageSpaceRoot)
         val mesh: MeshResource = MeshResource.createSphere(BALL_RADIUS_M)
         leftThumbMat = idleMaterial(); leftIndexMat = idleMaterial()
         rightThumbMat = idleMaterial(); rightIndexMat = idleMaterial()
@@ -41,13 +51,19 @@ class IndicatorBallsRenderer {
         setRoughness(0.5f)
     }
 
-    /** Call every frame with the latest [ChargeUiState]. World positions, not stage-anchored —
-     * hand tracking data is already in world space. */
+    /** Call every frame with the latest [ChargeUiState]. Positions arrive in Stage space (raw
+     * hand tracking data) and are converted into SpatialView space via [stageSpaceRoot] before
+     * being applied — see the class doc on why this conversion is required. */
     fun update(state: ChargeUiState) {
-        leftThumbBall.components[TransformComponent::class.java]?.setPosition(state.positions.leftThumb)
-        leftIndexBall.components[TransformComponent::class.java]?.setPosition(state.positions.leftIndex)
-        rightThumbBall.components[TransformComponent::class.java]?.setPosition(state.positions.rightThumb)
-        rightIndexBall.components[TransformComponent::class.java]?.setPosition(state.positions.rightIndex)
+        val p = state.positions
+        leftThumbBall.components[TransformComponent::class.java]
+            ?.setPosition(stageSpaceRoot.convertPositionFrom(p.leftThumb, null))
+        leftIndexBall.components[TransformComponent::class.java]
+            ?.setPosition(stageSpaceRoot.convertPositionFrom(p.leftIndex, null))
+        rightThumbBall.components[TransformComponent::class.java]
+            ?.setPosition(stageSpaceRoot.convertPositionFrom(p.rightThumb, null))
+        rightIndexBall.components[TransformComponent::class.java]
+            ?.setPosition(stageSpaceRoot.convertPositionFrom(p.rightIndex, null))
 
         val activeIsLeft = state.positions.activeHandIsLeft
         val rgb = ChargeIndicatorColor.forFraction(state.chargeFraction)
@@ -62,5 +78,6 @@ class IndicatorBallsRenderer {
 
     fun dispose(content: SpatialViewContent) {
         listOf(leftThumbBall, leftIndexBall, rightThumbBall, rightIndexBall).forEach { content.removeEntity(it) }
+        content.removeEntity(stageSpaceRoot)
     }
 }

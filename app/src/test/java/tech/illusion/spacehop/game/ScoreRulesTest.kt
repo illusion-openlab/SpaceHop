@@ -44,4 +44,19 @@ class ScoreRulesTest {
         assertEquals(before.score, after.score)
         assertEquals(before.jumpsCompleted, after.jumpsCompleted)
     }
+
+    @Test
+    fun applyLanding_streakBrokenByLaterSuccess_bestComboStreakKeepsThePeak() {
+        // Result panel shows "最高连击" (this run's best streak), which must survive a streak
+        // reset — reading the live comboStreak instead would report whatever streak the run
+        // happened to end on, not the actual peak reached earlier in the run.
+        var state = RunState()
+        state = ScoreRules.applyLanding(state, LandingResult.PERFECT) // streak 1
+        state = ScoreRules.applyLanding(state, LandingResult.PERFECT) // streak 2
+        state = ScoreRules.applyLanding(state, LandingResult.PERFECT) // streak 3 (peak)
+        state = ScoreRules.applyLanding(state, LandingResult.SUCCESS) // streak resets to 0
+        state = ScoreRules.applyLanding(state, LandingResult.PERFECT) // streak 1 again
+        assertEquals(1, state.comboStreak)
+        assertEquals(3, state.bestComboStreak)
+    }
 }

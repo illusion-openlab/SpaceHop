@@ -1,4 +1,5 @@
 <resources>
-    <string name="app_name">SpaceHop</string>
+    <string name="app_name">请不要吃我</string>
+    <string name="start_premise">青蛙从厨房的水缸里逃了出来。\n不停跳向下一个盘子，才能躲开人类。</string>
     <string name="hello">Hello, Spatial SDK！</string>
 </resources>

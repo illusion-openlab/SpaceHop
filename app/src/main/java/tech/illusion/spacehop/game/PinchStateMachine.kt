@@ -13,8 +13,8 @@ enum class PinchEvent { STARTED, ENDED }
  * `content/PinchChargeController.kt`).
  */
 class PinchStateMachine(
-    private val enterThresholdMeters: Float = 0.025f,
-    private val exitThresholdMeters: Float = 0.045f,
+    private val enterThresholdMeters: Float = 0.015f,
+    private val exitThresholdMeters: Float = 0.03f,
     private val requiredConsistentFrames: Int = 3,
 ) {
     private var pinching = false
