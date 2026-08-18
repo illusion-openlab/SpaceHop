@@ -3,9 +3,13 @@ package tech.illusion.spacehop.content
 import android.util.Log
 import androidx.compose.runtime.withFrameNanos
 import com.pico.spatial.core.ecs.Entity
+import com.pico.spatial.core.ecs.LoadType
+import com.pico.spatial.core.ecs.ObjectAudioComponent
 import com.pico.spatial.core.ecs.TransformComponent
 import com.pico.spatial.core.ecs.animation.AnimationPlaybackController
+import com.pico.spatial.core.ecs.audio.AudioPlayerController
 import com.pico.spatial.core.ecs.resource.AnimationResource
+import com.pico.spatial.core.ecs.resource.AudioResource
 import com.pico.spatial.core.math.EulerAngles
 import com.pico.spatial.core.math.Vector3
 import kotlin.math.atan2
@@ -19,6 +23,18 @@ private const val ARC_HEIGHT_M = 0.12f
 private const val FALL_DURATION_MS = 500L
 private const val FALL_DROP_M = 0.6f
 private const val FROG_ASSET_PATH = "asset://model/frog.usdz"
+private const val JUMP_AUDIO_NAME = "frogJump"
+private const val FALL_AUDIO_NAME = "frogFall"
+// "asset://..." — the audio-resource doc's own load-from-assets *sample code* shows a bare
+// relative path, but on-device both a bare path and a clean, valid .mp3/.wav file threw
+// ResourceLoadingException("Illegal file type", url: <the bare path>) identically regardless of
+// the file's actual codec — the failure tracks the path string, not the file content — so the
+// LoadType.FROM_ASSETS enum's own doc comment ("specified by a URI using the asset:// scheme")
+// is what this build's runtime actually honours; the sample text is stale for this SDK version.
+// .wav, not .mp3: every real ObjectAudioComponent/AmbientAudioComponent sample in the SDK docs
+// (spatial-sdk_audio_example-create-immersive-spatial-audio.md) ships .wav assets, never .mp3.
+private const val JUMP_AUDIO_ASSET_PATH = "asset://audio/jump.wav"
+private const val FALL_AUDIO_ASSET_PATH = "asset://audio/fall.wav"
 // Extra downward nudge past the measured feet-on-ground position — the bounds-based grounding
 // still read slightly high on-device; tune this by eye on real-device screenshots.
 private const val FROG_EXTRA_GROUND_OFFSET_M = 0.03f
@@ -31,7 +47,12 @@ private const val ANIM_TAG = "SpaceHopAnim"
  * [entity] is a plain wrapper — position/squash-scale target, exactly as before — with the
  * loaded `Frog_Jump.usdz` model as its child ([modelEntity]), so the model's own normalization
  * scale (baked in once by [load]) is never overwritten by the squash/idle scale calls below. */
-class CharacterController private constructor(private val entity: Entity, private val modelEntity: Entity) {
+class CharacterController private constructor(
+    private val entity: Entity,
+    private val modelEntity: Entity,
+    private val jumpAudioController: AudioPlayerController,
+    private val fallAudioController: AudioPlayerController,
+) {
 
     private var basePosition = Vector3.ZERO
     // Tracked by hand for the same reason as [basePosition]: this SDK's `TransformComponent`
@@ -78,7 +99,23 @@ class CharacterController private constructor(private val entity: Entity, privat
                     ),
                 )
             }
-            return CharacterController(entity, model)
+            // Bound to `entity` (the wrapper), not `model` — `entity` is what `flyTo`/`recenterTo`
+            // actually move every frame, so both stingers' position keeps tracking wherever the
+            // frog actually is (mid-arc for the jump cue, wherever it came up short for the fall
+            // cue) instead of freezing wherever the frog happened to be when this loaded. One
+            // ObjectAudioComponent serves both — it's entity-level spatial config, not tied to a
+            // single AudioResource; each prepareAudio call below gets its own AudioPlayerController.
+            entity.components.set(ObjectAudioComponent())
+            val jumpAudioResource = withContext(Dispatchers.IO) {
+                AudioResource.load(name = JUMP_AUDIO_NAME, path = JUMP_AUDIO_ASSET_PATH, loadType = LoadType.FROM_ASSETS)
+            }
+            val jumpAudioController = entity.prepareAudio(jumpAudioResource)
+            val fallAudioResource = withContext(Dispatchers.IO) {
+                AudioResource.load(name = FALL_AUDIO_NAME, path = FALL_AUDIO_ASSET_PATH, loadType = LoadType.FROM_ASSETS)
+            }
+            val fallAudioController = entity.prepareAudio(fallAudioResource)
+
+            return CharacterController(entity, model, jumpAudioController, fallAudioController)
         }
     }
 
@@ -120,6 +157,18 @@ class CharacterController private constructor(private val entity: Entity, privat
         playback.stop()
         playback.close()
         jumpPlayback = null
+    }
+
+    /** Restarts the jump stinger from the top every call — a rapid next jump can otherwise
+     * overlap the tail of the previous one still finishing. */
+    private fun playJumpSound() {
+        jumpAudioController.stop()
+        jumpAudioController.play()
+    }
+
+    private fun playFallSound() {
+        fallAudioController.stop()
+        fallAudioController.play()
     }
 
     fun setIdlePosition(position: Vector3) {
@@ -170,6 +219,7 @@ class CharacterController private constructor(private val entity: Entity, privat
      * with the actual landing local-Z offset once the flight completes. */
     suspend fun flyTo(launchDistanceMeters: Float, onFrame: (Vector3) -> Unit): Vector3 {
         playJumpAnimation()
+        playJumpSound()
         val startNanos = withFrameNanos { it }
         var endPosition = basePosition
         while (true) {
@@ -193,6 +243,7 @@ class CharacterController private constructor(private val entity: Entity, privat
 
     /** Drops the character straight down and fades scale toward zero — miss feedback. */
     suspend fun fall() {
+        playFallSound()
         val startNanos = withFrameNanos { it }
         val start = basePosition
         while (true) {

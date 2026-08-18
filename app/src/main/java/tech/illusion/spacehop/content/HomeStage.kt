@@ -61,6 +61,15 @@ private const val PRIMARY_PANEL_TILT_PITCH_DEGREES = -20f
 // physical release can be read as a completed charge and fire an instant jump. Swallow any
 // release within this window of a run starting so only the player's next, deliberate pinch counts.
 private const val JUMP_INPUT_GRACE_MS = 400L
+// Design ask: the frog must jump within this long each round or it gets caught. Kept independent
+// of countdown.mp3's own ~12.7s runtime (StageBoardAnimator-style constants are hand-tuned game
+// design knobs here, not derived from an asset's incidental length).
+private const val ROUND_TIME_LIMIT_MS = 13_000L
+// Forced-miss distance for the timeout catch below: short enough that LandingJudge.judge always
+// reads it as MISS no matter the current difficulty stage. Provably safe, not tuned by feel —
+// DifficultyCurve's footprint radius never exceeds 0.09m while its target distance never drops
+// below 0.18m, so any offset from a jump this short is guaranteed to clear the widest footprint.
+private const val AUTO_FAIL_LAUNCH_DISTANCE_M = 0.05f
 
 /** Mirrors the design doc's "起始态" as this run's idle/ready state, not literally re-showing
  * a start page every retry — "再来一局" restarts play directly (design-contract.md decision,
@@ -82,7 +91,7 @@ fun HomeStage() {
     val anchor = remember { Entity() }
     val indicatorBalls = remember { IndicatorBallsRenderer() }
     val trail = remember { TrailRenderer() }
-    val sfx = remember { Sfx() }
+    val sfx = remember { Sfx(context) }
     val spawner = remember { PlatformSpawner(Random.Default) }
     val boardAnimator = remember { StageBoardAnimator() }
     val highScoreStore = remember { HighScoreStore(context) }
@@ -92,6 +101,10 @@ fun HomeStage() {
     var characterController by remember { mutableStateOf<CharacterController?>(null) }
     var phase by remember { mutableStateOf<HopPhase>(HopPhase.NotStarted) }
     var runStartedAtNanos by remember { mutableLongStateOf(0L) }
+    // Flips true the instant a jump is committed (release, past the grace period) and back to
+    // false once the next round begins — the single signal the round-timeout watchdog below
+    // reads after its delay to tell "player jumped in time" from "ran out the clock".
+    var jumpCommittedThisRound by remember { mutableStateOf(false) }
 
     fun startNewRun() {
         runState = RunState()
@@ -104,6 +117,7 @@ fun HomeStage() {
             faceTarget(fresh.platforms[1].lateralOffsetMeters, fresh.platforms[1].distanceFromPreviousMeters)
         }
         runStartedAtNanos = System.nanoTime()
+        jumpCommittedThisRound = false
         phase = HopPhase.Playing
     }
 
@@ -140,8 +154,11 @@ fun HomeStage() {
             if (phase !is HopPhase.Playing || !runState.isAlive) return@start
             val sinceRunStartMs = (System.nanoTime() - runStartedAtNanos) / 1_000_000L
             if (sinceRunStartMs < JUMP_INPUT_GRACE_MS) return@start
+            // Committed: stop this round's countdown tick right away — the jump stinger itself
+            // plays from the frog (CharacterController.flyTo), not here.
+            jumpCommittedThisRound = true
+            sfx.stopCountdown()
             trail.clear()
-            sfx.play(HopSfxEvent.LAUNCH)
             val launchDistance = ChargeCurve.launchDistanceMeters(
                 cappedHeldMillis,
                 minDistance = DifficultyCurve.minDistanceMeters(runState.jumpsCompleted),
@@ -163,14 +180,14 @@ fun HomeStage() {
                 )
                 runState = ScoreRules.applyLanding(runState, result)
                 if (result == LandingResult.MISS) {
-                    sfx.play(HopSfxEvent.FELL)
-                    controller.fall()
+                    controller.fall() // plays its own fall stinger from the frog
                     endRun()
                     return@launch
                 }
                 sfx.play(if (result == LandingResult.PERFECT) HopSfxEvent.LANDED_PERFECT else HopSfxEvent.LANDED_SUCCESS)
                 val advanced = StageBoard.advance(boardState, spawner, consecutiveJumps = runState.jumpsCompleted)
                 boardState = advanced
+                jumpCommittedThisRound = false // the new round's own countdown starts fresh below
                 // Recentre the character over the same window as the promoted platform's slide
                 // (StageBoardAnimator.animateAdvance) so they arrive at the anchor together,
                 // instead of the character snapping there only after the platform finishes. The
@@ -192,6 +209,7 @@ fun HomeStage() {
     }
 
     LaunchedEffect(Unit) {
+        var wasCharging = false
         while (true) {
             delay(16)
             val state = PinchChargeController.chargeState.value
@@ -199,7 +217,41 @@ fun HomeStage() {
             characterController?.let { c ->
                 if (state.isCharging) c.applyChargeSquash(state.chargeFraction) else c.resetSquash()
             }
+            // Edge-triggered, not level-triggered — mirrors the indicator-ball/squash feedback
+            // above by staying ungated on `phase` (charging still visually reacts on the start
+            // /result screens today; the sound follows the same existing behaviour).
+            if (state.isCharging && !wasCharging) sfx.startCharge()
+            else if (!state.isCharging && wasCharging) sfx.stopCharge()
+            wasCharging = state.isCharging
         }
+    }
+
+    // Per-round catch timer: restarts on every new `boardState` (a fresh run start or a
+    // successful advance both assign a new one), and Compose cancels the previous instance's
+    // `delay` outright when that happens — so reaching the code after `delay` here already
+    // proves this exact round is still the one in play. `jumpCommittedThisRound` is the only
+    // thing that still needs an explicit check: a jump commits well before `boardState` changes
+    // (the flight animation runs in between), so without it a last-instant jump would race this
+    // watchdog into firing a false catch.
+    LaunchedEffect(boardState, phase) {
+        if (phase !is HopPhase.Playing) return@LaunchedEffect
+        sfx.startCountdown()
+        delay(ROUND_TIME_LIMIT_MS)
+        if (jumpCommittedThisRound) return@LaunchedEffect
+        val controller = characterController ?: return@LaunchedEffect
+        sfx.stopCountdown()
+        // Set isAlive=false (mirrors ScoreRules.applyLanding's MISS branch) before the app's own
+        // forced-miss jump starts animating, not after — flyTo below takes ~420ms, and it's this
+        // flag (via onRelease's `!runState.isAlive` guard) that stops a last-instant real release
+        // from also fighting this coroutine over the entity's transform.
+        runState = runState.copy(isAlive = false)
+        trail.clear()
+        // The app plays out a real (too-short) jump attempt instead of just despawning the frog
+        // in place — same fly/fall path a player-triggered miss takes, just with a distance
+        // engineered to always fall short (see AUTO_FAIL_LAUNCH_DISTANCE_M).
+        controller.flyTo(AUTO_FAIL_LAUNCH_DISTANCE_M) { local -> trail.sample(local) }
+        controller.fall() // plays its own fall stinger from the frog
+        endRun()
     }
 
     SpatialView(
