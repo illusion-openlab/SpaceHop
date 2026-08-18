@@ -24,7 +24,6 @@ private const val FALL_DURATION_MS = 500L
 private const val FALL_DROP_M = 0.6f
 private const val FROG_ASSET_PATH = "asset://model/frog.usdz"
 private const val JUMP_AUDIO_NAME = "frogJump"
-private const val FALL_AUDIO_NAME = "frogFall"
 // "asset://..." — the audio-resource doc's own load-from-assets *sample code* shows a bare
 // relative path, but on-device both a bare path and a clean, valid .mp3/.wav file threw
 // ResourceLoadingException("Illegal file type", url: <the bare path>) identically regardless of
@@ -34,7 +33,6 @@ private const val FALL_AUDIO_NAME = "frogFall"
 // .wav, not .mp3: every real ObjectAudioComponent/AmbientAudioComponent sample in the SDK docs
 // (spatial-sdk_audio_example-create-immersive-spatial-audio.md) ships .wav assets, never .mp3.
 private const val JUMP_AUDIO_ASSET_PATH = "asset://audio/jump.wav"
-private const val FALL_AUDIO_ASSET_PATH = "asset://audio/fall.wav"
 // Extra downward nudge past the measured feet-on-ground position — the bounds-based grounding
 // still read slightly high on-device; tune this by eye on real-device screenshots.
 private const val FROG_EXTRA_GROUND_OFFSET_M = 0.03f
@@ -51,7 +49,6 @@ class CharacterController private constructor(
     private val entity: Entity,
     private val modelEntity: Entity,
     private val jumpAudioController: AudioPlayerController,
-    private val fallAudioController: AudioPlayerController,
 ) {
 
     private var basePosition = Vector3.ZERO
@@ -99,23 +96,17 @@ class CharacterController private constructor(
                     ),
                 )
             }
-            // Bound to `entity` (the wrapper), not `model` — `entity` is what `flyTo`/`recenterTo`
-            // actually move every frame, so both stingers' position keeps tracking wherever the
-            // frog actually is (mid-arc for the jump cue, wherever it came up short for the fall
-            // cue) instead of freezing wherever the frog happened to be when this loaded. One
-            // ObjectAudioComponent serves both — it's entity-level spatial config, not tied to a
-            // single AudioResource; each prepareAudio call below gets its own AudioPlayerController.
+            // Bound to `entity` (the wrapper), not `model` — `entity` is what `flyTo` actually
+            // moves every frame, so the jump cue's position keeps tracking the frog mid-arc
+            // instead of freezing wherever it happened to be when this loaded. The fall stinger
+            // lives on the *plate* the frog missed instead (StageBoardAnimator), not here.
             entity.components.set(ObjectAudioComponent())
             val jumpAudioResource = withContext(Dispatchers.IO) {
                 AudioResource.load(name = JUMP_AUDIO_NAME, path = JUMP_AUDIO_ASSET_PATH, loadType = LoadType.FROM_ASSETS)
             }
             val jumpAudioController = entity.prepareAudio(jumpAudioResource)
-            val fallAudioResource = withContext(Dispatchers.IO) {
-                AudioResource.load(name = FALL_AUDIO_NAME, path = FALL_AUDIO_ASSET_PATH, loadType = LoadType.FROM_ASSETS)
-            }
-            val fallAudioController = entity.prepareAudio(fallAudioResource)
 
-            return CharacterController(entity, model, jumpAudioController, fallAudioController)
+            return CharacterController(entity, model, jumpAudioController)
         }
     }
 
@@ -164,11 +155,6 @@ class CharacterController private constructor(
     private fun playJumpSound() {
         jumpAudioController.stop()
         jumpAudioController.play()
-    }
-
-    private fun playFallSound() {
-        fallAudioController.stop()
-        fallAudioController.play()
     }
 
     fun setIdlePosition(position: Vector3) {
@@ -241,9 +227,9 @@ class CharacterController private constructor(
         return endPosition
     }
 
-    /** Drops the character straight down and fades scale toward zero — miss feedback. */
+    /** Drops the character straight down and fades scale toward zero — miss feedback. Callers
+     * pair this with `StageBoardAnimator.playFallSound()` for the audio cue. */
     suspend fun fall() {
-        playFallSound()
         val startNanos = withFrameNanos { it }
         val start = basePosition
         while (true) {

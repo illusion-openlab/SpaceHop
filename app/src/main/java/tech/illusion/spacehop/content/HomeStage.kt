@@ -61,15 +61,17 @@ private const val PRIMARY_PANEL_TILT_PITCH_DEGREES = -20f
 // physical release can be read as a completed charge and fire an instant jump. Swallow any
 // release within this window of a run starting so only the player's next, deliberate pinch counts.
 private const val JUMP_INPUT_GRACE_MS = 400L
-// Design ask: the frog must jump within this long each round or it gets caught. Kept independent
-// of countdown.mp3's own ~12.7s runtime (StageBoardAnimator-style constants are hand-tuned game
-// design knobs here, not derived from an asset's incidental length).
-private const val ROUND_TIME_LIMIT_MS = 13_000L
-// Forced-miss distance for the timeout catch below: short enough that LandingJudge.judge always
-// reads it as MISS no matter the current difficulty stage. Provably safe, not tuned by feel —
-// DifficultyCurve's footprint radius never exceeds 0.09m while its target distance never drops
-// below 0.18m, so any offset from a jump this short is guaranteed to clear the widest footprint.
-private const val AUTO_FAIL_LAUNCH_DISTANCE_M = 0.05f
+// Design ask: the frog must jump within this long each round or it gets caught. A hand-tuned
+// game design knob, independent of countdown.mp3's own ~12.7s runtime — a real player jump cuts
+// the cue short (see onRelease below), but the app's own forced-miss catch lets it keep playing.
+private const val ROUND_TIME_LIMIT_MS = 10_200L
+// Forced-miss distance multiplier for the timeout catch below: PlatformSpawner never spawns a
+// target farther than DifficultyCurve.maxDistanceMeters(consecutiveJumps) (it interpolates up to,
+// but never reaches, that ceiling), so launching at 1.5x that ceiling always overshoots the
+// target by at least half of it — e.g. at minimum, 0.5 * 0.32m = 0.16m — which is always well
+// past the widest possible footprint radius (0.09m). Provably safe, not tuned by feel, and reads
+// as the frog leaping too hard and overshooting the plate rather than falling meekly short.
+private const val AUTO_FAIL_LAUNCH_DISTANCE_MULTIPLIER = 1.5f
 
 /** Mirrors the design doc's "起始态" as this run's idle/ready state, not literally re-showing
  * a start page every retry — "再来一局" restarts play directly (design-contract.md decision,
@@ -154,8 +156,9 @@ fun HomeStage() {
             if (phase !is HopPhase.Playing || !runState.isAlive) return@start
             val sinceRunStartMs = (System.nanoTime() - runStartedAtNanos) / 1_000_000L
             if (sinceRunStartMs < JUMP_INPUT_GRACE_MS) return@start
-            // Committed: stop this round's countdown tick right away — the jump stinger itself
-            // plays from the frog (CharacterController.flyTo), not here.
+            // Committed — the round-timeout watchdog below reads this to know a real jump beat
+            // the clock. Only a genuine player jump cuts the countdown cue short; the app's own
+            // forced-miss catch (same LaunchedEffect) deliberately leaves it playing instead.
             jumpCommittedThisRound = true
             sfx.stopCountdown()
             trail.clear()
@@ -180,7 +183,8 @@ fun HomeStage() {
                 )
                 runState = ScoreRules.applyLanding(runState, result)
                 if (result == LandingResult.MISS) {
-                    controller.fall() // plays its own fall stinger from the frog
+                    boardAnimator.playFallSound() // from the plate that stayed empty, not the frog
+                    controller.fall()
                     endRun()
                     return@launch
                 }
@@ -239,18 +243,21 @@ fun HomeStage() {
         delay(ROUND_TIME_LIMIT_MS)
         if (jumpCommittedThisRound) return@LaunchedEffect
         val controller = characterController ?: return@LaunchedEffect
-        sfx.stopCountdown()
+        // No sfx.stopCountdown() here, unlike onRelease — this catch is the app's own doing, not
+        // the player's, so the countdown cue is left to keep playing rather than cut off.
         // Set isAlive=false (mirrors ScoreRules.applyLanding's MISS branch) before the app's own
         // forced-miss jump starts animating, not after — flyTo below takes ~420ms, and it's this
         // flag (via onRelease's `!runState.isAlive` guard) that stops a last-instant real release
         // from also fighting this coroutine over the entity's transform.
         runState = runState.copy(isAlive = false)
         trail.clear()
-        // The app plays out a real (too-short) jump attempt instead of just despawning the frog
-        // in place — same fly/fall path a player-triggered miss takes, just with a distance
-        // engineered to always fall short (see AUTO_FAIL_LAUNCH_DISTANCE_M).
-        controller.flyTo(AUTO_FAIL_LAUNCH_DISTANCE_M) { local -> trail.sample(local) }
-        controller.fall() // plays its own fall stinger from the frog
+        // The app plays out a real (too-far) jump attempt instead of just despawning the frog in
+        // place — same fly/fall path a player-triggered miss takes, just with a distance
+        // engineered to always overshoot (see AUTO_FAIL_LAUNCH_DISTANCE_MULTIPLIER).
+        val autoFailDistance = DifficultyCurve.maxDistanceMeters(runState.jumpsCompleted) * AUTO_FAIL_LAUNCH_DISTANCE_MULTIPLIER
+        controller.flyTo(autoFailDistance) { local -> trail.sample(local) }
+        boardAnimator.playFallSound() // from the plate that stayed empty, not the frog
+        controller.fall()
         endRun()
     }
 

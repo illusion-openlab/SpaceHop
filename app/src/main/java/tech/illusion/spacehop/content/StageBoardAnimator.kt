@@ -2,8 +2,12 @@ package tech.illusion.spacehop.content
 
 import androidx.compose.runtime.withFrameNanos
 import com.pico.spatial.core.ecs.Entity
+import com.pico.spatial.core.ecs.LoadType
+import com.pico.spatial.core.ecs.ObjectAudioComponent
 import com.pico.spatial.core.ecs.OpacityControllerComponent
 import com.pico.spatial.core.ecs.TransformComponent
+import com.pico.spatial.core.ecs.audio.AudioPlayerController
+import com.pico.spatial.core.ecs.resource.AudioResource
 import com.pico.spatial.core.math.Vector3
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -15,6 +19,8 @@ import tech.illusion.spacehop.game.StageBoardState
 internal const val ADVANCE_PHASE_MS = 240L
 
 private const val PLATE_ASSET_PATH = "asset://model/Plate.usdz"
+private const val FALL_AUDIO_NAME = "plateFall"
+private const val FALL_AUDIO_ASSET_PATH = "asset://audio/fall.wav"
 
 /** How much further out than its final spot the freshly-spawned "next" platform starts its
  * approach from, so it visibly slides in from ahead rather than materializing where it stands
@@ -59,6 +65,12 @@ private fun lerpTransform(a: PlacedTransform, b: PlacedTransform, t: Float) =
  * Own transform bookkeeping ([currentTransform]/[nextTransform]) rather than reading transforms
  * back off the entities — this SDK's `TransformComponent` only has verified setters
  * (`setPosition`/`setScaleVector`/...), no confirmed getters.
+ *
+ * Each plate entity also carries its own prepared fall-sound `AudioPlayerController`
+ * ([currentFallAudio]/[nextFallAudio]), swapped alongside the entity/opacity refs in
+ * [animateAdvance] for the same reason: the "you didn't make it" cue plays from the *plate* the
+ * frog missed (design ask), not the frog itself, and which physical entity is currently playing
+ * the "next" plate's role changes every successful landing.
  */
 class StageBoardAnimator {
 
@@ -66,12 +78,18 @@ class StageBoardAnimator {
     private lateinit var nextEntity: Entity
     private lateinit var currentOpacity: OpacityControllerComponent
     private lateinit var nextOpacity: OpacityControllerComponent
+    private lateinit var currentFallAudio: AudioPlayerController
+    private lateinit var nextFallAudio: AudioPlayerController
     private lateinit var currentTransform: PlacedTransform
     private lateinit var nextTransform: PlacedTransform
 
     suspend fun build(anchor: Entity) {
-        currentEntity = loadPlateEntity()
-        nextEntity = loadPlateEntity()
+        val (currentPlate, currentAudio) = loadPlateEntity()
+        val (nextPlate, nextAudio) = loadPlateEntity()
+        currentEntity = currentPlate
+        nextEntity = nextPlate
+        currentFallAudio = currentAudio
+        nextFallAudio = nextAudio
         anchor.addChild(currentEntity)
         anchor.addChild(nextEntity)
         currentOpacity = currentEntity.components[OpacityControllerComponent::class.java]!!
@@ -82,17 +100,32 @@ class StageBoardAnimator {
      * `Plate.usdz` model as a child, scaled once so its own bounding-sphere radius reads as
      * 1m — [PlacedTransform.of]'s `footprintRadiusMeters` scale on the wrapper then multiplies
      * through to give the plate its actual on-screen size, exactly as the old unit-radius
-     * cylinder mesh did. */
-    private suspend fun loadPlateEntity(): Entity {
+     * cylinder mesh did. Also carries a prepared fall-sound `AudioPlayerController`, bound to
+     * the same wrapper so it plays from wherever that particular plate ends up sitting. */
+    private suspend fun loadPlateEntity(): Pair<Entity, AudioPlayerController> {
         val wrapper = Entity()
         wrapper.components.set(OpacityControllerComponent(1f))
+        wrapper.components.set(ObjectAudioComponent())
         val plate = withContext(Dispatchers.IO) { Entity.load(PLATE_ASSET_PATH) }
         wrapper.addChild(plate)
         val nativeRadius = plate.getVisualBounds(null, recursive = true).boundingSphereRadius
         val normalizeScale = if (nativeRadius > 0f) 1f / nativeRadius else 1f
         plate.components[TransformComponent::class.java]
             ?.setScaleVector(Vector3(normalizeScale, normalizeScale, normalizeScale))
-        return wrapper
+        val fallAudioResource = withContext(Dispatchers.IO) {
+            AudioResource.load(name = FALL_AUDIO_NAME, path = FALL_AUDIO_ASSET_PATH, loadType = LoadType.FROM_ASSETS)
+        }
+        val fallAudioController = wrapper.prepareAudio(fallAudioResource)
+        return wrapper to fallAudioController
+    }
+
+    /** Plays the fall stinger from whichever plate is currently the jump target — the one the
+     * frog just missed, whether by falling short, overshooting, or the app's own forced-miss
+     * catch. Restarts from the top every call, matching CharacterController's jump-stinger
+     * convention. Call this alongside `CharacterController.fall()`, not from inside it. */
+    fun playFallSound() {
+        nextFallAudio.stop()
+        nextFallAudio.play()
     }
 
     /** No animation — used once when a fresh run starts (there is no "materialize" moment at
@@ -110,14 +143,16 @@ class StageBoardAnimator {
     suspend fun animateAdvance(newState: StageBoardState) {
         val staleEntity = currentEntity
         val staleOpacity = currentOpacity
+        val staleFallAudio = currentFallAudio
         val promotedEntity = nextEntity
         val promotedOpacity = nextOpacity
+        val promotedFallAudio = nextFallAudio
         val promotedFrom = nextTransform
 
         // Swap the references now: everything below — and every call after this one returns —
         // treats the promoted platform as "current" and the stale one as "next".
-        currentEntity = promotedEntity; currentOpacity = promotedOpacity
-        nextEntity = staleEntity; nextOpacity = staleOpacity
+        currentEntity = promotedEntity; currentOpacity = promotedOpacity; currentFallAudio = promotedFallAudio
+        nextEntity = staleEntity; nextOpacity = staleOpacity; nextFallAudio = staleFallAudio
 
         // The promoted platform becomes the anchor origin itself (the character lands and
         // resets to Vector3(0f, 0.05f, 0f) — see HomeStage.kt's `controller.setIdlePosition`

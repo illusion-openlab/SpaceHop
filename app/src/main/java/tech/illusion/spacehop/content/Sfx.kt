@@ -49,14 +49,15 @@ class Sfx(context: Context) {
         }
     }
 
-    /** Starts the per-round countdown tick. Stops any still-playing previous tick first —
-     * `stopCountdown` should already have been called by the time a new round begins, but a
+    /** Starts the per-round countdown tick. Stops any still-playing previous tick first — a
      * stale stream must never be left racing a new one. */
     fun startCountdown() {
         stopCountdown()
         countdownStreamId = pool.play(countdownSoundId, 1f, 1f, LOAD_PRIORITY, 0, 1f)
     }
 
+    /** A genuine player jump calls this directly (HomeStage's onRelease); the app's own
+     * forced-miss catch on timeout deliberately does not, so the cue keeps playing through it. */
     fun stopCountdown() {
         if (countdownStreamId != NO_STREAM) pool.stop(countdownStreamId)
         countdownStreamId = NO_STREAM

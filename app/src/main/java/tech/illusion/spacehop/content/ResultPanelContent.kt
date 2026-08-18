@@ -38,7 +38,7 @@ fun ResultPanelContent(
             .padding(28.dp),
     ) {
         Text(
-            text = if (isNewRecord) "新纪录！" else "本局结束",
+            text = if (isNewRecord) "新纪录！" else "青蛙被抓住了",
             style = PicoTheme.typography.headlineLarge,
             // Celebratory color only on an actual new record — a plain run stays neutral so the
             // accent keeps meaning instead of showing on every result.
