@@ -81,11 +81,21 @@ private fun lerpTransform(a: PlacedTransform, b: PlacedTransform, t: Float) =
 private class PlatformVisual(
     val wrapper: Entity,
     val opacity: OpacityControllerComponent,
+    val plate: Entity,
     val plateOpacity: OpacityControllerComponent,
+    val plateNormalizeScale: Float,
+    val lotus: Entity,
     val lotusOpacity: OpacityControllerComponent,
+    val lotusNormalizeScale: Float,
     val fallAudio: AudioPlayerController,
     val splashAudio: AudioPlayerController,
 )
+
+/** [entity] with the uniform scale [loadNormalizedJumpTarget] normalized it to — kept alongside
+ * the entity (rather than read back later; this SDK's `TransformComponent` has no confirmed scale
+ * getter) so [StageBoardAnimator.applyKind] can restore the exact right size when un-hiding a
+ * child, not just any non-zero one. */
+private data class NormalizedTarget(val entity: Entity, val normalizeScale: Float)
 
 /**
  * Owns exactly two platform-slot wrapper entities for the whole game, built once, never
@@ -151,12 +161,12 @@ class StageBoardAnimator {
         wrapper.components.set(OpacityControllerComponent(1f))
         wrapper.components.set(ObjectAudioComponent())
 
-        val plate = loadNormalizedJumpTarget(PLATE_ASSET_PATH, alignTopToOrigin = true)
+        val (plate, plateNormalizeScale) = loadNormalizedJumpTarget(PLATE_ASSET_PATH, alignTopToOrigin = true)
         val plateOpacity = OpacityControllerComponent(1f)
         plate.components.set(plateOpacity)
         wrapper.addChild(plate)
 
-        val lotus = loadNormalizedJumpTarget(LOTUS_ASSET_PATH, alignTopToOrigin = true)
+        val (lotus, lotusNormalizeScale) = loadNormalizedJumpTarget(LOTUS_ASSET_PATH, alignTopToOrigin = true)
         val lotusOpacity = OpacityControllerComponent(0f)
         lotus.components.set(lotusOpacity)
         wrapper.addChild(lotus)
@@ -183,8 +193,12 @@ class StageBoardAnimator {
         return PlatformVisual(
             wrapper = wrapper,
             opacity = wrapper.components[OpacityControllerComponent::class.java]!!,
+            plate = plate,
             plateOpacity = plateOpacity,
+            plateNormalizeScale = plateNormalizeScale,
+            lotus = lotus,
             lotusOpacity = lotusOpacity,
+            lotusNormalizeScale = lotusNormalizeScale,
             fallAudio = fallAudioController,
             splashAudio = splashAudioController,
         )
@@ -202,7 +216,7 @@ class StageBoardAnimator {
         wrapper.components[TransformComponent::class.java]
             ?.setScaleVector(Vector3(WINDOW_REAL_SCALE, WINDOW_REAL_SCALE, WINDOW_REAL_SCALE))
 
-        val window = loadNormalizedJumpTarget(WINDOW_ASSET_PATH)
+        val window = loadNormalizedJumpTarget(WINDOW_ASSET_PATH).entity
         wrapper.addChild(window)
 
         val lilyPadsBackdrop = withContext(Dispatchers.IO) { Entity.load(LILY_PADS_ASSET_PATH) }
@@ -242,7 +256,7 @@ class StageBoardAnimator {
      *
      * Applied to both jump-target models below; left off for the window prop, which the frog
      * only flies through mid-arc and never stands on. */
-    private suspend fun loadNormalizedJumpTarget(assetPath: String, alignTopToOrigin: Boolean = false): Entity {
+    private suspend fun loadNormalizedJumpTarget(assetPath: String, alignTopToOrigin: Boolean = false): NormalizedTarget {
         val model = withContext(Dispatchers.IO) { Entity.load(assetPath) }
         val bounds = model.getVisualBounds(null, recursive = true)
         val normalizeScale = if (bounds.boundingSphereRadius > 0f) 1f / bounds.boundingSphereRadius else 1f
@@ -262,16 +276,29 @@ class StageBoardAnimator {
                 "size=${bounds.size} sphereR=${bounds.boundingSphereRadius} " +
                 "normalizeScale=$normalizeScale alignTop=$alignTopToOrigin appliedY=$appliedY",
         )
-        return model
+        return NormalizedTarget(model, normalizeScale)
     }
 
     /** Shows exactly the child matching [kind] on [visual], hiding the other. Only ever called
      * while [visual]'s own overall opacity is 0 (a fresh [build] before anything is shown, or
      * mid-[animateAdvance] once the stale wrapper has fully faded out), so the switch itself is
-     * never visible. */
+     * never visible.
+     *
+     * Also zero-scales the hidden child, on top of zeroing its opacity — belt and suspenders
+     * (the same hide convention this codebase already uses for the trail dots and window prop)
+     * for an as-yet-unconfirmed report of a small stray dark mark on a plate: scale-to-zero
+     * collapses the hidden mesh to no geometry at all, which can't render regardless of whether
+     * the opacity path has some edge case this hasn't found yet. Restores [PlatformVisual.
+     * plateNormalizeScale]/[PlatformVisual.lotusNormalizeScale] — not `Vector3(1f, 1f, 1f)` —
+     * when showing a child, since that normalization scale (not 1) is each model's own
+     * real-to-1m-bounding-sphere baseline (see [loadNormalizedJumpTarget]). */
     private fun applyKind(visual: PlatformVisual, kind: PlatformKind) {
         visual.plateOpacity.opacity = if (kind == PlatformKind.PLATE) 1f else 0f
         visual.lotusOpacity.opacity = if (kind == PlatformKind.LOTUS) 1f else 0f
+        val plateScale = if (kind == PlatformKind.PLATE) visual.plateNormalizeScale else 0f
+        val lotusScale = if (kind == PlatformKind.LOTUS) visual.lotusNormalizeScale else 0f
+        visual.plate.components[TransformComponent::class.java]?.setScaleVector(Vector3(plateScale, plateScale, plateScale))
+        visual.lotus.components[TransformComponent::class.java]?.setScaleVector(Vector3(lotusScale, lotusScale, lotusScale))
     }
 
     /** Positions the one-time window prop at [target]'s window leg (relative to the current

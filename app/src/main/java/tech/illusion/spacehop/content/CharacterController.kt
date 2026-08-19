@@ -46,7 +46,7 @@ private const val JUMP_AUDIO_ASSET_PATH = "asset://audio/jump.wav"
 // (measured `size.y = 0.0396`) — 0.02 here would bury half of it. Millimetres are the right
 // order of magnitude; raise it slightly if the frog reads as floating, drop it toward 0 if the
 // legs disappear into the surface.
-private const val FROG_EXTRA_GROUND_OFFSET_M = 0.002f
+private const val FROG_EXTRA_GROUND_OFFSET_M = 0.003f
 private const val ANIM_TAG = "SpaceHopAnim"
 
 /** Owns the character entity's transform across its animation states. All timing is
