@@ -22,6 +22,10 @@ private const val FLIGHT_DURATION_MS = 420L
 private const val ARC_HEIGHT_M = 0.12f
 private const val FALL_DURATION_MS = 500L
 private const val FALL_DROP_M = 0.6f
+// How far the frog tips over as it falls, simulating losing its footing rather than just
+// sinking straight down. Sign convention (which way "forward" tips) is unverified, same caveat
+// as aimYawDegrees below — flip FALL_TIP_DEGREES's sign if it tips the wrong way on-device.
+private const val FALL_TIP_DEGREES = 80f
 private const val FROG_ASSET_PATH = "asset://model/frog.usdz"
 private const val JUMP_AUDIO_NAME = "frogJump"
 // "asset://..." — the audio-resource doc's own load-from-assets *sample code* shows a bare
@@ -33,9 +37,16 @@ private const val JUMP_AUDIO_NAME = "frogJump"
 // .wav, not .mp3: every real ObjectAudioComponent/AmbientAudioComponent sample in the SDK docs
 // (spatial-sdk_audio_example-create-immersive-spatial-audio.md) ships .wav assets, never .mp3.
 private const val JUMP_AUDIO_ASSET_PATH = "asset://audio/jump.wav"
-// Extra downward nudge past the measured feet-on-ground position — the bounds-based grounding
-// still read slightly high on-device; tune this by eye on real-device screenshots.
-private const val FROG_EXTRA_GROUND_OFFSET_M = 0.03f
+// How far the feet settle *into* the plate/leaf surface, purely for a grounded look (a hair of
+// contact beats a mathematically perfect tangent, which tends to read as hovering).
+//
+// Rescaled from 0.02 when the grounding math was fixed below: back then this was absorbing a
+// ~4.7cm container-space measurement error, so it needed to be large. Now that the feet land on
+// the surface by measurement, it is only the sink, and the frog is just ~4cm tall on-device
+// (measured `size.y = 0.0396`) — 0.02 here would bury half of it. Millimetres are the right
+// order of magnitude; raise it slightly if the frog reads as floating, drop it toward 0 if the
+// legs disappear into the surface.
+private const val FROG_EXTRA_GROUND_OFFSET_M = 0.002f
 private const val ANIM_TAG = "SpaceHopAnim"
 
 /** Owns the character entity's transform across its animation states. All timing is
@@ -75,27 +86,55 @@ class CharacterController private constructor(
             // flip is applied by hand below instead of re-measuring after rotating: a first
             // attempt that measured via getVisualBounds(entity, ...) *after* rotating landed the
             // model well clear of the platform horizontally, so it's not trusted here.
-            val bounds = model.getVisualBounds(null, recursive = true)
-            val scale = if (bounds.boundingSphereRadius > 0f) characterRadiusMeters / bounds.boundingSphereRadius else 1f
+            // Size comes from the model's OWN local bounds (`relativeTo = model`, the local-space
+            // case the SDK's bounding-box FAQ describes). `relativeTo = null` returns bounds
+            // "relative to the container" instead, and this model is already parented to
+            // `entity` -> `anchor` by now — the anchor sits ~0.8m up and 0.9m out
+            // (StageCalibration), so container-space bounds carry that offset. Radius happens to
+            // survive it (a bounding sphere is translation-invariant), but min/center do not.
+            val localBounds = model.getVisualBounds(model, recursive = true)
+            val scale = if (localBounds.boundingSphereRadius > 0f) {
+                characterRadiusMeters / localBounds.boundingSphereRadius
+            } else {
+                1f
+            }
             modelTransform?.apply {
                 setScaleVector(Vector3(scale, scale, scale))
                 // Authored facing +Z (toward the player); the character travels -Z per `flyTo`'s
                 // auto-aim, so flip it 180° around Y — no sign ambiguity at 180°, unlike the
                 // primary panel's still-unverified pitch tilt (HomeStage.kt).
                 setEulerAngles(EulerAngles(pitch = 0f, yaw = 180f, roll = 0f))
-                // The model's authored origin is neither centred over its footprint nor at its
-                // feet (it rendered floating above the plate, off-centre) — shift it so the
-                // horizontal centre and the lowest point (feet) land exactly on this entity's
-                // own origin, which `entity`'s position then places on the ground/platform.
-                // X/Z use +center (not -center) because the 180° flip above already negates them.
-                setPosition(
-                    Vector3(
-                        bounds.center.x * scale,
-                        -bounds.min.y * scale - FROG_EXTRA_GROUND_OFFSET_M,
-                        bounds.center.z * scale + 0.03f,
-                    ),
-                )
+                setPosition(Vector3.ZERO)
             }
+            // Second pass: with scale and the 180° flip now applied, measure where the model
+            // actually sits relative to the wrapper `entity` — the thing the game positions on a
+            // platform — and correct from that measurement. Measuring after transforming (rather
+            // than predicting the result arithmetically) is what makes this self-correcting: it
+            // needs no assumption about the model's authored pivot, and the rotation is already
+            // baked into the numbers, so no sign juggling. An earlier attempt did measure this
+            // way but then *added* the measured centre on X/Z instead of subtracting it, which
+            // double-counted the flip and threw the model clear of the platform — hence the
+            // now-deleted `+ 0.03f` Z fudge and the container-space `-bounds.min.y` Y term, both
+            // of which were compensating for that instead of fixing it (confirmed on-device: the
+            // frog's feet measured 4.7cm below this wrapper, which is exactly how far it sank
+            // under both platforms).
+            val placed = model.getVisualBounds(entity, recursive = true)
+            modelTransform?.setPosition(
+                Vector3(
+                    -placed.center.x,
+                    -placed.min.y - FROG_EXTRA_GROUND_OFFSET_M,
+                    -placed.center.z,
+                ),
+            )
+            // Verification, not decoration: `min.y` here should read almost exactly
+            // -FROG_EXTRA_GROUND_OFFSET_M, and centre x/z ~0. Cheap (runs once per load) and this
+            // is the number two rounds of reasoning-without-measuring got wrong.
+            val corrected = model.getVisualBounds(entity, recursive = true)
+            Log.e(
+                GROUND_TAG,
+                "frog vs wrapper (corrected): min=${corrected.min} center=${corrected.center} " +
+                    "size=${corrected.size} expectedMinY=${-FROG_EXTRA_GROUND_OFFSET_M}",
+            )
             // Bound to `entity` (the wrapper), not `model` — `entity` is what `flyTo` actually
             // moves every frame, so the jump cue's position keeps tracking the frog mid-arc
             // instead of freezing wherever it happened to be when this loaded. The fall stinger
@@ -199,13 +238,27 @@ class CharacterController private constructor(
         entity.components[TransformComponent::class.java]?.setScaleVector(Vector3(1f, 1f, 1f))
     }
 
-    /** Animates a parabolic arc from [basePosition] to the point [launchDistanceMeters] ahead
-     * (auto-aimed straight down -Z, per design doc §2.1), calling [onFrame] with the visited
-     * local offset each frame so callers (e.g. `TrailRenderer`) can sample it, then resolves
-     * with the actual landing local-Z offset once the flight completes. */
-    suspend fun flyTo(launchDistanceMeters: Float, onFrame: (Vector3) -> Unit): Vector3 {
+    /** Animates a parabolic arc from [basePosition] out [launchDistanceMeters] along the
+     * straight line toward the platform at ([targetLateralOffsetMeters], [targetForwardDistanceMeters])
+     * — no longer fixed to dead-ahead (design ask: a jump can genuinely angle left/right now,
+     * not just visually face that way while still flying straight down -Z). The lateral/forward
+     * split scales together with [launchDistanceMeters] in the same ratio as the target's own
+     * lateral:forward — the same direction [aimYawDegrees] turns to face — so an overshoot or
+     * undershoot still lands short of or past the target along that one line; it isn't judged
+     * per axis, just no longer constrained to one axis only. Resolves with the actual landing
+     * local offset once the flight completes. */
+    suspend fun flyTo(
+        launchDistanceMeters: Float,
+        targetLateralOffsetMeters: Float,
+        targetForwardDistanceMeters: Float,
+    ): Vector3 {
         playJumpAnimation()
         playJumpSound()
+        val lateralRatio = if (targetForwardDistanceMeters != 0f) {
+            targetLateralOffsetMeters / targetForwardDistanceMeters
+        } else {
+            0f
+        }
         val startNanos = withFrameNanos { it }
         var endPosition = basePosition
         while (true) {
@@ -213,12 +266,12 @@ class CharacterController private constructor(
             val elapsedMs = (nowNanos - startNanos) / 1_000_000f
             val t = (elapsedMs / FLIGHT_DURATION_MS).coerceIn(0f, 1f)
             val forwardOffset = -launchDistanceMeters * t
+            val lateralOffset = launchDistanceMeters * lateralRatio * t
             val heightOffset = ARC_HEIGHT_M * 4f * t * (1f - t) // parabola peaking at t=0.5
-            val local = Vector3(basePosition.x, basePosition.y + heightOffset, basePosition.z + forwardOffset)
+            val local = Vector3(basePosition.x + lateralOffset, basePosition.y + heightOffset, basePosition.z + forwardOffset)
             entity.components[TransformComponent::class.java]?.setPosition(local)
-            onFrame(local)
             if (t >= 1f) {
-                endPosition = Vector3(basePosition.x, basePosition.y, basePosition.z + forwardOffset)
+                endPosition = Vector3(basePosition.x + lateralOffset, basePosition.y, basePosition.z + forwardOffset)
                 break
             }
         }
@@ -227,35 +280,38 @@ class CharacterController private constructor(
         return endPosition
     }
 
-    /** Drops the character straight down and fades scale toward zero — miss feedback. Callers
-     * pair this with `StageBoardAnimator.playFallSound()` for the audio cue. */
-    suspend fun fall() {
+    /** Drops the character straight down, tipping over toward whichever direction it lost its
+     * footing ([tippedForward] true for an overshoot — feet slid off the far edge — false for an
+     * undershoot, feet never reaching the near edge), and fades scale toward zero — miss
+     * feedback that reads as losing balance rather than just sinking in place. Callers pair this
+     * with `StageBoardAnimator.playFallSound()` for the audio cue. */
+    suspend fun fall(tippedForward: Boolean) {
         val startNanos = withFrameNanos { it }
         val start = basePosition
+        val tipSign = if (tippedForward) 1f else -1f
         while (true) {
             val nowNanos = withFrameNanos { it }
             val elapsedMs = (nowNanos - startNanos) / 1_000_000f
             val t = (elapsedMs / FALL_DURATION_MS).coerceIn(0f, 1f)
-            entity.components[TransformComponent::class.java]?.setPosition(
-                Vector3(start.x, start.y - FALL_DROP_M * t, start.z),
-            )
-            entity.components[TransformComponent::class.java]?.setScaleVector(
-                Vector3(1f - t, 1f - t, 1f - t),
-            )
+            entity.components[TransformComponent::class.java]?.apply {
+                setPosition(Vector3(start.x, start.y - FALL_DROP_M * t, start.z))
+                setScaleVector(Vector3(1f - t, 1f - t, 1f - t))
+                setEulerAngles(EulerAngles(pitch = tipSign * FALL_TIP_DEGREES * t, yaw = baseYawDegrees, roll = 0f))
+            }
             if (t >= 1f) break
         }
     }
 
-    /** Smoothly moves from the landed spot back to [target] (the recentred idle position) while
-     * turning to face the next platform ([nextLateralOffsetMeters] / [nextForwardDistanceMeters]),
-     * over [durationMs] — call concurrently with `StageBoardAnimator.animateAdvance`'s platform
-     * slide (same [tech.illusion.spacehop.content.ADVANCE_PHASE_MS] duration) so the character and
-     * the platform it's standing on arrive at the anchor together instead of the platform sliding
-     * out from under a character that only snaps back afterwards.
+    /** Smoothly moves from the landed spot back to [target] (the recentred idle position) over
+     * [durationMs] — call concurrently with `StageBoardAnimator.animateAdvance`'s platform slide
+     * (same [tech.illusion.spacehop.content.ADVANCE_PHASE_MS] duration) so the character and the
+     * platform it's standing on arrive at the anchor together instead of the platform sliding out
+     * from under a character that only snaps back afterwards.
      *
-     * The yaw lerps plainly, with no shortest-arc handling: both endpoints come from
-     * [aimYawDegrees], whose range is bounded by the spawner's lateral offset over its minimum
-     * distance (`atan2(0.08, 0.18)` ≈ 24°), so the turn can never approach the ±180° wrap. */
+     * Turning to face the next platform ([nextLateralOffsetMeters] / [nextForwardDistanceMeters])
+     * is snapped immediately instead of lerped alongside the position slide — the frog should
+     * already be looking toward its next jump for the whole recentre (and the charge/aim time
+     * after it), not still turning partway through (design ask: face the next target early). */
     suspend fun recenterTo(
         target: Vector3,
         nextLateralOffsetMeters: Float,
@@ -263,8 +319,9 @@ class CharacterController private constructor(
         durationMs: Long,
     ) {
         val start = basePosition
-        val startYaw = baseYawDegrees
-        val targetYaw = aimYawDegrees(nextLateralOffsetMeters, nextForwardDistanceMeters)
+        baseYawDegrees = aimYawDegrees(nextLateralOffsetMeters, nextForwardDistanceMeters)
+        entity.components[TransformComponent::class.java]
+            ?.setEulerAngles(EulerAngles(pitch = 0f, yaw = baseYawDegrees, roll = 0f))
         val startNanos = withFrameNanos { it }
         while (true) {
             val nowNanos = withFrameNanos { it }
@@ -275,13 +332,9 @@ class CharacterController private constructor(
                 start.y + (target.y - start.y) * t,
                 start.z + (target.z - start.z) * t,
             )
-            entity.components[TransformComponent::class.java]?.apply {
-                setPosition(position)
-                setEulerAngles(EulerAngles(pitch = 0f, yaw = startYaw + (targetYaw - startYaw) * t, roll = 0f))
-            }
+            entity.components[TransformComponent::class.java]?.setPosition(position)
             if (t >= 1f) break
         }
         basePosition = target
-        baseYawDegrees = targetYaw
     }
 }

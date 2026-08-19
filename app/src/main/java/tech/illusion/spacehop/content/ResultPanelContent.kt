@@ -28,6 +28,7 @@ fun ResultPanelContent(
     bestCombo: Int,
     bestScore: Int,
     isNewRecord: Boolean,
+    diedInLotusPond: Boolean,
     onRetry: () -> Unit,
 ) {
     Column(
@@ -38,7 +39,13 @@ fun ResultPanelContent(
             .padding(28.dp),
     ) {
         Text(
-            text = if (isNewRecord) "新纪录！" else "青蛙被抓住了",
+            // V2: a miss in the lotus pond isn't a capture — the frog is already home, it just
+            // didn't stick the landing and swam back to its own pond instead.
+            text = when {
+                isNewRecord -> "新纪录！"
+                diedInLotusPond -> "它游回了自己的池塘"
+                else -> "青蛙被抓住了"
+            },
             style = PicoTheme.typography.headlineLarge,
             // Celebratory color only on an actual new record — a plain run stays neutral so the
             // accent keeps meaning instead of showing on every result.

@@ -41,4 +41,57 @@ class StageBoardTest {
         val secondNextIndex = state.platforms[1].index
         assertTrue(secondNextIndex > firstNextIndex)
     }
+
+    @Test
+    fun advance_atOrBeforeTwentyConsecutiveJumps_nextStaysPlate() {
+        val spawner = PlatformSpawner(Random(4))
+        var state = initialState(spawner)
+        state = StageBoard.advance(state, spawner, consecutiveJumps = 20)
+        assertEquals(PlatformKind.PLATE, state.platforms[1].kind)
+    }
+
+    @Test
+    fun advance_afterTwentyConsecutiveJumps_nextIsCompoundWindowCrossingIntoLotus() {
+        val spawner = PlatformSpawner(Random(5))
+        var state = initialState(spawner)
+        state = StageBoard.advance(state, spawner, consecutiveJumps = 21)
+        val next = state.platforms[1]
+        assertEquals(PlatformKind.LOTUS, next.kind)
+        assertTrue("windowCrossingDistanceMeters should be set on the trigger jump", next.windowCrossingDistanceMeters != null)
+        assertTrue(
+            "total distance should be longer than just the window leg",
+            next.distanceFromPreviousMeters > next.windowCrossingDistanceMeters!!,
+        )
+    }
+
+    @Test
+    fun advance_forceWindowCrossing_triggersCrossingWellBelowComboThreshold() {
+        val spawner = PlatformSpawner(Random(8))
+        var state = initialState(spawner)
+        // Low combo count that would never trigger the crossing on its own.
+        state = StageBoard.advance(state, spawner, consecutiveJumps = 3, forceWindowCrossing = true)
+        val next = state.platforms[1]
+        assertEquals(PlatformKind.LOTUS, next.kind)
+        assertTrue("windowCrossingDistanceMeters should be set on the forced crossing jump", next.windowCrossingDistanceMeters != null)
+    }
+
+    @Test
+    fun advance_forceWindowCrossingFalse_belowComboThreshold_nextStaysPlate() {
+        val spawner = PlatformSpawner(Random(9))
+        var state = initialState(spawner)
+        state = StageBoard.advance(state, spawner, consecutiveJumps = 3, forceWindowCrossing = false)
+        assertEquals(PlatformKind.PLATE, state.platforms[1].kind)
+    }
+
+    @Test
+    fun advance_onceInLotusWorld_neverReturnsToPlateAndNeverCrossesAgain() {
+        val spawner = PlatformSpawner(Random(7))
+        var state = initialState(spawner)
+        state = StageBoard.advance(state, spawner, consecutiveJumps = 21) // the compound crossing jump
+        repeat(10) { i ->
+            state = StageBoard.advance(state, spawner, consecutiveJumps = 22 + i)
+            assertEquals(PlatformKind.LOTUS, state.platforms[1].kind)
+            assertEquals(null, state.platforms[1].windowCrossingDistanceMeters)
+        }
+    }
 }

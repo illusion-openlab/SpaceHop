@@ -7,6 +7,7 @@ import com.pico.spatial.core.ecs.TransformComponent
 import com.pico.spatial.core.ecs.resource.MeshResource
 import com.pico.spatial.core.ecs.resource.PhysicallyBasedMaterial
 import com.pico.spatial.core.math.Color4
+import com.pico.spatial.core.math.Vector3
 import tech.illusion.spacehop.game.ChargeIndicatorColor
 
 private const val BALL_RADIUS_M = 0.01f
@@ -53,17 +54,34 @@ class IndicatorBallsRenderer {
 
     /** Call every frame with the latest [ChargeUiState]. Positions arrive in Stage space (raw
      * hand tracking data) and are converted into SpatialView space via [stageSpaceRoot] before
-     * being applied — see the class doc on why this conversion is required. */
+     * being applied — see the class doc on why this conversion is required.
+     *
+     * [IndicatorPositions.leftTracked]/[IndicatorPositions.rightTracked] gate each pair's scale:
+     * a hand with no tracking data this frame carries meaningless `Vector3.ZERO` positions (see
+     * [PinchChargeController.processHandFrame]), which converts to a fixed point that can land
+     * right on a platform — confirmed by report as a small stray dot sitting on a plate. Scaling
+     * that pair to zero instead of drawing a ball at the placeholder is the same hide convention
+     * [StageBoardAnimator] uses elsewhere in this package. */
     fun update(state: ChargeUiState) {
         val p = state.positions
-        leftThumbBall.components[TransformComponent::class.java]
-            ?.setPosition(stageSpaceRoot.convertPositionFrom(p.leftThumb, null))
-        leftIndexBall.components[TransformComponent::class.java]
-            ?.setPosition(stageSpaceRoot.convertPositionFrom(p.leftIndex, null))
-        rightThumbBall.components[TransformComponent::class.java]
-            ?.setPosition(stageSpaceRoot.convertPositionFrom(p.rightThumb, null))
-        rightIndexBall.components[TransformComponent::class.java]
-            ?.setPosition(stageSpaceRoot.convertPositionFrom(p.rightIndex, null))
+        val leftScale = if (p.leftTracked) Vector3(1f, 1f, 1f) else Vector3.ZERO
+        val rightScale = if (p.rightTracked) Vector3(1f, 1f, 1f) else Vector3.ZERO
+        leftThumbBall.components[TransformComponent::class.java]?.apply {
+            setPosition(stageSpaceRoot.convertPositionFrom(p.leftThumb, null))
+            setScaleVector(leftScale)
+        }
+        leftIndexBall.components[TransformComponent::class.java]?.apply {
+            setPosition(stageSpaceRoot.convertPositionFrom(p.leftIndex, null))
+            setScaleVector(leftScale)
+        }
+        rightThumbBall.components[TransformComponent::class.java]?.apply {
+            setPosition(stageSpaceRoot.convertPositionFrom(p.rightThumb, null))
+            setScaleVector(rightScale)
+        }
+        rightIndexBall.components[TransformComponent::class.java]?.apply {
+            setPosition(stageSpaceRoot.convertPositionFrom(p.rightIndex, null))
+            setScaleVector(rightScale)
+        }
 
         val activeIsLeft = state.positions.activeHandIsLeft
         val rgb = ChargeIndicatorColor.forFraction(state.chargeFraction)

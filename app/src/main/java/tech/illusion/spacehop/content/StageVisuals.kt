@@ -14,7 +14,6 @@ import com.pico.spatial.core.math.Color4
  */
 object StagePalette {
     const val PERFECT_ZONE = 0xFFD966
-    const val TRAIL = 0xFFE9B0
     const val INDICATOR_IDLE = 0x8492AB
 
     fun color(hex: Int, opacity: Float = 1f): Color4 = Color4(

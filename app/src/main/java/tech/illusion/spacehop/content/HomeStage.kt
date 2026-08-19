@@ -16,10 +16,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.compose.ui.platform.LocalContext
 import com.pico.spatial.core.ecs.Entity
 import com.pico.spatial.core.ecs.TransformComponent
 import com.pico.spatial.core.math.EulerAngles
@@ -27,6 +27,9 @@ import com.pico.spatial.core.math.Vector3
 import com.pico.spatial.tracking.hmd.HMDTrackingProvider
 import com.pico.spatial.ui.design.PicoTheme
 import com.pico.spatial.ui.foundation.content.SpatialView
+import com.pico.spatial.ui.platform.HandController
+import com.pico.spatial.ui.platform.HandControllerHapticType
+import com.pico.spatial.ui.platform.LocalHandControllerHaptic
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -36,6 +39,7 @@ import tech.illusion.spacehop.game.DifficultyCurve
 import tech.illusion.spacehop.game.HighScoreStore
 import tech.illusion.spacehop.game.LandingJudge
 import tech.illusion.spacehop.game.LandingResult
+import tech.illusion.spacehop.game.PlatformKind
 import tech.illusion.spacehop.game.PlatformSpawner
 import tech.illusion.spacehop.game.RunState
 import tech.illusion.spacehop.game.ScoreRules
@@ -75,6 +79,25 @@ private const val ROUND_TIME_LIMIT_MS = 10_200L
 // past the widest possible footprint radius (0.09m). Provably safe, not tuned by feel, and reads
 // as the frog leaping too hard and overshooting the plate rather than falling meekly short.
 private const val AUTO_FAIL_LAUNCH_DISTANCE_MULTIPLIER = 1.5f
+// V2 alt path into the same window-crossing beat as StageBoard.WINDOW_TRIGGER_JUMPS_COMPLETED,
+// for a player going for speed instead of raw combo length: land this many plates with no more
+// than this much real time between the oldest and newest of them. Tracked here (not in
+// StageBoard, which stays wall-clock-free and purely testable) via `recentLandingTimestampsMs`
+// below, then handed to StageBoard.advance as a plain bool each landing.
+private const val FAST_STREAK_JUMPS_REQUIRED = 10
+private const val FAST_STREAK_WINDOW_MS = 10_000L
+// The platform plane itself: StageBoardAnimator puts each platform's landable top surface at
+// exactly this height (verified on-device — both the plate and the lotus leaf measure top.y ≈ 0
+// relative to their wrapper), and CharacterController.load puts the frog's feet on its own
+// wrapper origin, so the two meet with nothing to add here.
+//
+// This was `0.05` from the original procedural-sphere character (git history: the placeholder
+// used `characterMesh(radiusMeters = 0.05f)`, so half its height was the right centre height).
+// After the frog model replaced the sphere it survived as an accidental counterweight to a
+// container-space measurement bug in CharacterController.load — removing it exposed that bug
+// rather than causing one. Fixing the measurement is what makes 0 correct here; don't reintroduce
+// an offset to compensate for grounding, tune FROG_EXTRA_GROUND_OFFSET_M instead.
+private const val CHARACTER_GROUND_Y = 0f
 
 /** Mirrors the design doc's "起始态" as this run's idle/ready state, not literally re-showing
  * a start page every retry — "再来一局" restarts play directly (design-contract.md decision,
@@ -82,7 +105,7 @@ private const val AUTO_FAIL_LAUNCH_DISTANCE_MULTIPLIER = 1.5f
 private sealed class HopPhase {
     data object NotStarted : HopPhase()
     data object Playing : HopPhase()
-    data class Result(val isNewRecord: Boolean) : HopPhase()
+    data class Result(val isNewRecord: Boolean, val diedInLotusPond: Boolean) : HopPhase()
 }
 
 /** Task 10 gate: the full loop with all three SpatialUI panels. `primary` (front, blocking)
@@ -92,10 +115,14 @@ private sealed class HopPhase {
 fun HomeStage() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    // Safe at this scope even without a lexical PicoTheme wrapper here: Main.kt calls
+    // `DefaultStage { PicoTheme { HomeStage() } }`, so this whole function body already runs
+    // inside a PicoTheme composition. Feeds controller-trigger charge/jump input below — a no-op
+    // when the player is bare-handed with no controller connected.
+    val controllerHaptic = LocalHandControllerHaptic.current
     val hmd = remember { HMDTrackingProvider() }
     val anchor = remember { Entity() }
     val indicatorBalls = remember { IndicatorBallsRenderer() }
-    val trail = remember { TrailRenderer() }
     val sfx = remember { Sfx(context) }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, sfx) {
@@ -122,6 +149,11 @@ fun HomeStage() {
     // false once the next round begins — the single signal the round-timeout watchdog below
     // reads after its delay to tell "player jumped in time" from "ran out the clock".
     var jumpCommittedThisRound by remember { mutableStateOf(false) }
+    // Plain mutable object, not Compose state — read/written only from within performJump, never
+    // needs to trigger recomposition on its own. Holds at most FAST_STREAK_JUMPS_REQUIRED entries
+    // (oldest evicted first), so `last - first` is the span of the most recent landings once full —
+    // see performJump's isFastStreak check below.
+    val recentLandingTimestampsMs = remember { ArrayDeque<Long>() }
 
     fun startNewRun() {
         runState = RunState()
@@ -129,19 +161,100 @@ fun HomeStage() {
         boardState = fresh
         boardAnimator.placeInstant(fresh) // cold reset, not a landing — no slide/fade
         characterController?.apply {
-            setIdlePosition(Vector3(0f, 0.05f, 0f))
+            setIdlePosition(Vector3(0f, CHARACTER_GROUND_Y, 0f))
             // Snap, not turn: a cold run start has no landing transition to fold the turn into.
             faceTarget(fresh.platforms[1].lateralOffsetMeters, fresh.platforms[1].distanceFromPreviousMeters)
         }
         runStartedAtNanos = System.nanoTime()
         jumpCommittedThisRound = false
+        recentLandingTimestampsMs.clear()
         phase = HopPhase.Playing
     }
 
-    fun endRun() {
+    // V2: a miss in the lotus pond reads as "swam home", not "caught" — see ResultPanelContent.
+    fun endRun(diedInLotusPond: Boolean) {
         val isNewRecord = highScoreStore.submitScore(runState.score)
         if (isNewRecord) sfx.play(HopSfxEvent.NEW_RECORD)
-        phase = HopPhase.Result(isNewRecord)
+        phase = HopPhase.Result(isNewRecord, diedInLotusPond)
+    }
+
+    /** The one place a jump actually flies and its outcome is applied — shared by a real
+     * player release and the round-timeout watchdog's own forced jumps (both the
+     * guaranteed-miss catch and the guaranteed-success window crossing), so all three keep the
+     * exact same fly/judge/advance sequence instead of three near-duplicate copies drifting
+     * apart. A window-crossing target ([PlatformSpec.windowCrossingDistanceMeters] non-null)
+     * forces [LandingResult.SUCCESS] instead of judging [flightDistance] by distance (V2 design
+     * ask: this beat must never fail the player out) — the window prop itself is already visible
+     * by the time this runs (revealed as soon as the compound jump was spawned as `next`, see
+     * the tail of this function), not just for the flight.
+     *
+     * V2: once the target is [PlatformKind.LOTUS], landing/falling swaps to the lotus-pond
+     * stage's own cues (a single landing chime instead of perfect/success, a splash instead of
+     * a clatter) — see [Sfx.playLotusLanding] / [StageBoardAnimator.playFallSound]. */
+    suspend fun performJump(controller: CharacterController, flightDistance: Float, trigger: String) {
+        val target = boardState.platforms[1]
+        val isWindowCrossing = target.windowCrossingDistanceMeters != null
+        controller.flyTo(flightDistance, target.lateralOffsetMeters, target.distanceFromPreviousMeters)
+        if (isWindowCrossing) boardAnimator.retireWindowCrossing()
+        val result = if (isWindowCrossing) LandingResult.SUCCESS else LandingJudge.judge(flightDistance, target)
+        Log.e(
+            "SpaceHopJump",
+            "trigger=$trigger flightDistance=$flightDistance targetDistance=${target.distanceFromPreviousMeters} " +
+                "footprintRadius=${target.footprintRadiusMeters} isWindowCrossing=$isWindowCrossing result=$result",
+        )
+        runState = ScoreRules.applyLanding(runState, result)
+        if (result == LandingResult.MISS) {
+            boardAnimator.playFallSound(target.kind) // from the plate/leaf that stayed empty, not the frog
+            if (target.kind == PlatformKind.LOTUS) sfx.stopStream() // a loop never ends on its own
+            controller.fall(tippedForward = flightDistance > target.distanceFromPreviousMeters)
+            endRun(diedInLotusPond = target.kind == PlatformKind.LOTUS)
+            return
+        }
+        if (target.kind == PlatformKind.LOTUS) {
+            sfx.playLotusLanding()
+        } else {
+            sfx.play(if (result == LandingResult.PERFECT) HopSfxEvent.LANDED_PERFECT else HopSfxEvent.LANDED_SUCCESS)
+        }
+        // Speed-based alt path to the same window-crossing beat as the combo-count one: once the
+        // last FAST_STREAK_JUMPS_REQUIRED landings (this one included) all fit inside
+        // FAST_STREAK_WINDOW_MS of real time, force the crossing regardless of combo length. Fed
+        // from every landing here — whichever trigger, `player`/`auto-fail`/`auto-window` — since
+        // an auto-fail never reaches this line (it's a MISS, judged above) and an already-crossed
+        // run just ignores this flag (StageBoard.advance's LOTUS branch takes priority).
+        recentLandingTimestampsMs.addLast(System.currentTimeMillis())
+        while (recentLandingTimestampsMs.size > FAST_STREAK_JUMPS_REQUIRED) recentLandingTimestampsMs.removeFirst()
+        val isFastStreak = recentLandingTimestampsMs.size == FAST_STREAK_JUMPS_REQUIRED &&
+            recentLandingTimestampsMs.last() - recentLandingTimestampsMs.first() <= FAST_STREAK_WINDOW_MS
+        val advanced = StageBoard.advance(
+            boardState,
+            spawner,
+            consecutiveJumps = runState.jumpsCompleted,
+            forceWindowCrossing = isFastStreak,
+        )
+        boardState = advanced
+        jumpCommittedThisRound = false // the new round's own countdown/stream starts fresh below
+        // Recentre the character over the same window as the promoted platform's slide
+        // (StageBoardAnimator.animateAdvance) so they arrive at the anchor together, instead of
+        // the character snapping there only after the platform finishes. The turn toward the
+        // newly-spawned next platform rides along in that same window.
+        coroutineScope {
+            launch {
+                controller.recenterTo(
+                    target = Vector3(0f, CHARACTER_GROUND_Y, 0f),
+                    nextLateralOffsetMeters = advanced.platforms[1].lateralOffsetMeters,
+                    nextForwardDistanceMeters = advanced.platforms[1].distanceFromPreviousMeters,
+                    durationMs = ADVANCE_PHASE_MS,
+                )
+            }
+            boardAnimator.animateAdvance(advanced)
+        }
+        // V2: reveal the window (and the lotus backdrop glimpsed through it) the moment the
+        // compound crossing jump is spawned, not right before the frog flies through it — the
+        // whole round leading up to that jump gets to see it coming.
+        val upcoming = advanced.platforms[1]
+        if (upcoming.windowCrossingDistanceMeters != null) {
+            boardAnimator.prepareWindowCrossing(upcoming)
+        }
     }
 
     DisposableEffect(hmd) {
@@ -166,64 +279,48 @@ fun HomeStage() {
     }
 
     DisposableEffect(Unit) {
-        PinchChargeController.start(onRelease = { cappedHeldMillis ->
-            val controller = characterController ?: return@start
-            if (phase !is HopPhase.Playing || !runState.isAlive) return@start
-            val sinceRunStartMs = (System.nanoTime() - runStartedAtNanos) / 1_000_000L
-            if (sinceRunStartMs < JUMP_INPUT_GRACE_MS) return@start
-            // Committed — the round-timeout watchdog below reads this to know a real jump beat
-            // the clock. Only a genuine player jump cuts the countdown cue short; the app's own
-            // forced-miss catch (same LaunchedEffect) deliberately leaves it playing instead.
-            jumpCommittedThisRound = true
-            sfx.stopCountdown()
-            trail.clear()
-            val launchDistance = ChargeCurve.launchDistanceMeters(
-                cappedHeldMillis,
-                minDistance = DifficultyCurve.minDistanceMeters(runState.jumpsCompleted),
-                maxDistance = DifficultyCurve.maxDistanceMeters(runState.jumpsCompleted),
-            )
-            scope.launch {
-                controller.flyTo(launchDistance) { local -> trail.sample(local) }
-                // Judge against the platform ahead (`platforms[1]`), not `current` — `current`
-                // is the platform the character is standing on (distance 0 from itself), which
-                // is what StageBoardAnimator renders at the anchor; the actual jump target is
-                // rendered ahead at `platforms[1]`'s distance (StageBoardAnimator.kt PlacedTransform).
-                val target = boardState.platforms[1]
-                val result = LandingJudge.judge(launchDistance, target)
-                Log.e(
-                    "SpaceHopJump",
-                    "heldMs=$cappedHeldMillis launchDistance=$launchDistance " +
-                        "targetDistance=${target.distanceFromPreviousMeters} " +
-                        "footprintRadius=${target.footprintRadiusMeters} result=$result",
+        PinchChargeController.start(
+            // Controller-trigger input only (bare-hand pinch has no "press start" moment worth
+            // a buzz for) — a light tap so charging registers without masking the stronger jump
+            // pulse below.
+            onChargeStart = { isLeftHand ->
+                controllerHaptic.feedback(
+                    HandControllerHapticType.Hover,
+                    if (isLeftHand) HandController.Left else HandController.Right,
                 )
-                runState = ScoreRules.applyLanding(runState, result)
-                if (result == LandingResult.MISS) {
-                    boardAnimator.playFallSound() // from the plate that stayed empty, not the frog
-                    controller.fall()
-                    endRun()
-                    return@launch
+            },
+            onRelease = { cappedHeldMillis, isLeftHand ->
+                val controller = characterController ?: return@start
+                if (phase !is HopPhase.Playing || !runState.isAlive) return@start
+                // A jump is already in flight (either the player's own, or the watchdog's forced one)
+                // — don't let a second release also grab the entity mid-animation.
+                if (jumpCommittedThisRound) return@start
+                val sinceRunStartMs = (System.nanoTime() - runStartedAtNanos) / 1_000_000L
+                if (sinceRunStartMs < JUMP_INPUT_GRACE_MS) return@start
+                // Committed — the round-timeout watchdog below reads this to know a real jump beat
+                // the clock. Only a genuine player jump cuts the countdown cue short; the app's own
+                // forced jumps (same LaunchedEffect) deliberately leave it playing instead.
+                jumpCommittedThisRound = true
+                controllerHaptic.feedback(
+                    HandControllerHapticType.Press,
+                    if (isLeftHand) HandController.Left else HandController.Right,
+                )
+                sfx.stopCountdown()
+                // V2: a window-crossing target is a guaranteed-success beat, flown at its own exact
+                // (compound) distance rather than whatever the player charged — see performJump.
+                val target = boardState.platforms[1]
+                val flightDistance = if (target.windowCrossingDistanceMeters != null) {
+                    target.distanceFromPreviousMeters
+                } else {
+                    ChargeCurve.launchDistanceMeters(
+                        cappedHeldMillis,
+                        minDistance = DifficultyCurve.minDistanceMeters(runState.jumpsCompleted),
+                        maxDistance = DifficultyCurve.maxDistanceMeters(runState.jumpsCompleted),
+                    )
                 }
-                sfx.play(if (result == LandingResult.PERFECT) HopSfxEvent.LANDED_PERFECT else HopSfxEvent.LANDED_SUCCESS)
-                val advanced = StageBoard.advance(boardState, spawner, consecutiveJumps = runState.jumpsCompleted)
-                boardState = advanced
-                jumpCommittedThisRound = false // the new round's own countdown starts fresh below
-                // Recentre the character over the same window as the promoted platform's slide
-                // (StageBoardAnimator.animateAdvance) so they arrive at the anchor together,
-                // instead of the character snapping there only after the platform finishes. The
-                // turn toward the newly-spawned next platform rides along in that same window.
-                coroutineScope {
-                    launch {
-                        controller.recenterTo(
-                            target = Vector3(0f, 0.05f, 0f),
-                            nextLateralOffsetMeters = advanced.platforms[1].lateralOffsetMeters,
-                            nextForwardDistanceMeters = advanced.platforms[1].distanceFromPreviousMeters,
-                            durationMs = ADVANCE_PHASE_MS,
-                        )
-                    }
-                    boardAnimator.animateAdvance(advanced)
-                }
-            }
-        })
+                scope.launch { performJump(controller, flightDistance, trigger = "player") }
+            },
+        )
         onDispose { PinchChargeController.stop(); sfx.release() }
     }
 
@@ -254,26 +351,54 @@ fun HomeStage() {
     // watchdog into firing a false catch.
     LaunchedEffect(boardState, phase) {
         if (phase !is HopPhase.Playing) return@LaunchedEffect
+        // V2 design ask: the lotus-pond stage has no time limit at all — once the frog has
+        // actually landed on a lotus leaf (not just while the window-crossing jump, still judged
+        // from the kitchen side, is upcoming as `next`), this is just an ambient loop, not a
+        // countdown-and-catch mechanism. Never returns to the kitchen stage, so once this branch
+        // is taken it's taken for the rest of the run (StageBoard.advance's one-way transition).
+        if (boardState.current.kind == PlatformKind.LOTUS) {
+            sfx.startStream()
+            return@LaunchedEffect
+        }
         sfx.startCountdown()
         delay(ROUND_TIME_LIMIT_MS)
         if (jumpCommittedThisRound) return@LaunchedEffect
         val controller = characterController ?: return@LaunchedEffect
-        // No sfx.stopCountdown() here, unlike onRelease — this catch is the app's own doing, not
-        // the player's, so the countdown cue is left to keep playing rather than cut off.
-        // Set isAlive=false (mirrors ScoreRules.applyLanding's MISS branch) before the app's own
-        // forced-miss jump starts animating, not after — flyTo below takes ~420ms, and it's this
-        // flag (via onRelease's `!runState.isAlive` guard) that stops a last-instant real release
-        // from also fighting this coroutine over the entity's transform.
-        runState = runState.copy(isAlive = false)
-        trail.clear()
-        // The app plays out a real (too-far) jump attempt instead of just despawning the frog in
-        // place — same fly/fall path a player-triggered miss takes, just with a distance
-        // engineered to always overshoot (see AUTO_FAIL_LAUNCH_DISTANCE_MULTIPLIER).
-        val autoFailDistance = DifficultyCurve.maxDistanceMeters(runState.jumpsCompleted) * AUTO_FAIL_LAUNCH_DISTANCE_MULTIPLIER
-        controller.flyTo(autoFailDistance) { local -> trail.sample(local) }
-        boardAnimator.playFallSound() // from the plate that stayed empty, not the frog
-        controller.fall()
-        endRun()
+        // Committed, same as a real release — blocks both a last-instant player pinch (below)
+        // and this same watchdog re-firing. No sfx.stopCountdown() here, unlike onRelease — this
+        // is the app's own doing, not the player's, so the countdown cue keeps playing through it.
+        jumpCommittedThisRound = true
+        val target = boardState.platforms[1]
+        val isWindowCrossing = target.windowCrossingDistanceMeters != null
+        if (!isWindowCrossing) {
+            // This one *is* a guaranteed miss — set isAlive=false (mirrors ScoreRules.applyLanding's
+            // MISS branch) before it starts animating, not after: flyTo below takes ~420ms, and
+            // it's this flag (via onRelease's `!runState.isAlive` guard) that stops a last-instant
+            // real release from also fighting this coroutine over the entity's transform. A window
+            // crossing never sets this — the run is meant to keep going.
+            runState = runState.copy(isAlive = false)
+        }
+        // The app plays out a real jump attempt instead of just despawning the frog in place —
+        // same fly/judge/advance-or-fall path performJump gives a player release, just with a
+        // distance engineered to always overshoot (AUTO_FAIL_LAUNCH_DISTANCE_MULTIPLIER), unless
+        // the target is the V2 window crossing, which is flown at its own exact (compound)
+        // distance and always succeeds.
+        val flightDistance = if (isWindowCrossing) {
+            target.distanceFromPreviousMeters
+        } else {
+            DifficultyCurve.maxDistanceMeters(runState.jumpsCompleted) * AUTO_FAIL_LAUNCH_DISTANCE_MULTIPLIER
+        }
+        // Launched in `scope`, not awaited directly in this coroutine: performJump mutates
+        // `boardState` partway through (see its `boardState = advanced` line), and `boardState`
+        // is one of this very LaunchedEffect's own keys. Awaiting it here would let that write
+        // schedule Compose to cancel-and-relaunch this exact coroutine, truncating
+        // StageBoardAnimator.animateAdvance mid-flight — after it swaps which wrapper is
+        // "current" vs "next" but before it recycles the stale one's visual/position — leaving a
+        // stranded plate/leaf floating where the old "current" used to sit. onRelease avoids this
+        // the same way, for the same reason: it isn't `boardState`-keyed either.
+        scope.launch {
+            performJump(controller, flightDistance, trigger = if (isWindowCrossing) "auto-window" else "auto-fail")
+        }
     }
 
     SpatialView(
@@ -282,13 +407,12 @@ fun HomeStage() {
                 ?.setPosition(StageCalibration.boardPosition(heightAdjustM))
             content.addEntity(anchor)
             indicatorBalls.build(content)
-            trail.build(content)
 
             boardAnimator.build(anchor)
             boardAnimator.placeInstant(boardState)
 
             characterController = CharacterController.load(anchor, characterRadiusMeters = 0.05f).also {
-                it.setIdlePosition(Vector3(0f, 0.05f, 0f))
+                it.setIdlePosition(Vector3(0f, CHARACTER_GROUND_Y, 0f))
                 it.faceTarget(
                     boardState.platforms[1].lateralOffsetMeters,
                     boardState.platforms[1].distanceFromPreviousMeters,
@@ -338,6 +462,7 @@ fun HomeStage() {
                                 bestCombo = runState.bestComboStreak,
                                 bestScore = highScoreStore.bestScore() ?: 0,
                                 isNewRecord = p.isNewRecord,
+                                diedInLotusPond = p.diedInLotusPond,
                                 onRetry = { startNewRun() },
                             )
                             is HopPhase.Playing -> Unit
