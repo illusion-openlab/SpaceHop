@@ -16,6 +16,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalContext
 import com.pico.spatial.core.ecs.Entity
 import com.pico.spatial.core.ecs.TransformComponent
@@ -94,6 +97,18 @@ fun HomeStage() {
     val indicatorBalls = remember { IndicatorBallsRenderer() }
     val trail = remember { TrailRenderer() }
     val sfx = remember { Sfx(context) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, sfx) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_PAUSE -> sfx.pause()
+                Lifecycle.Event.ON_RESUME -> sfx.resume()
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     val spawner = remember { PlatformSpawner(Random.Default) }
     val boardAnimator = remember { StageBoardAnimator() }
     val highScoreStore = remember { HighScoreStore(context) }

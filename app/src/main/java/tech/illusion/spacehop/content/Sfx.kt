@@ -73,6 +73,18 @@ class Sfx(context: Context) {
         chargeStreamId = NO_STREAM
     }
 
+    /** Pauses every currently-playing stream in the pool (countdown tick, charge loop, and the
+     * lotus stage's [startStream] water loop alike) — the one built-in SoundPool primitive that
+     * covers whichever of those happens to be active without tracking each one by hand. */
+    fun pause() {
+        pool.autoPause()
+    }
+
+    /** Resumes whatever [pause] paused. A no-op if nothing was playing. */
+    fun resume() {
+        pool.autoResume()
+    }
+
     fun release() {
         toneGenerator.release()
         pool.release()
