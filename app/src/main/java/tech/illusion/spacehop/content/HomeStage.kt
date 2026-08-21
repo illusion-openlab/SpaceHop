@@ -1,6 +1,10 @@
 package tech.illusion.spacehop.content
 
+import android.content.Context
+import android.content.ContextWrapper
 import android.util.Log
+import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -86,6 +90,11 @@ private const val AUTO_FAIL_LAUNCH_DISTANCE_MULTIPLIER = 1.5f
 // below, then handed to StageBoard.advance as a plain bool each landing.
 private const val FAST_STREAK_JUMPS_REQUIRED = 10
 private const val FAST_STREAK_WINDOW_MS = 10_000L
+// The round-timeout watchdog below polls in this granularity instead of one straight
+// `delay(ROUND_TIME_LIMIT_MS)`, so the exit-confirm freeze (`paused`) can hold the catch off
+// indefinitely — a real, already-suspended delay() can't be un-suspended once started, so only
+// time actually spent unpaused may count toward the limit.
+private const val ROUND_TIMEOUT_POLL_MS = 100L
 // The platform plane itself: StageBoardAnimator puts each platform's landable top surface at
 // exactly this height (verified on-device — both the plate and the lotus leaf measure top.y ≈ 0
 // relative to their wrapper), and CharacterController.load puts the frog's feet on its own
@@ -98,6 +107,17 @@ private const val FAST_STREAK_WINDOW_MS = 10_000L
 // rather than causing one. Fixing the measurement is what makes 0 correct here; don't reintroduce
 // an offset to compensate for grounding, tune FROG_EXTRA_GROUND_OFFSET_M instead.
 private const val CHARACTER_GROUND_Y = 0f
+
+/** Walks the `ContextWrapper` chain from a Compose [LocalContext] to find the hosting
+ * `ComponentActivity` — `SpatialLaunchActivity` still resolves down to `ComponentActivity` (per
+ * the SDK's own Activity-customization doc: "its superclass should be ComponentActivity or a
+ * subclass of it"), so `onBackPressedDispatcher` is reachable this way even though HomeStage
+ * never sees the Activity directly. */
+private tailrec fun Context.findComponentActivity(): ComponentActivity? = when (this) {
+    is ComponentActivity -> this
+    is ContextWrapper -> baseContext.findComponentActivity()
+    else -> null
+}
 
 /** Mirrors the design doc's "起始态" as this run's idle/ready state, not literally re-showing
  * a start page every retry — "再来一局" restarts play directly (design-contract.md decision,
@@ -114,6 +134,10 @@ private sealed class HopPhase {
 @Composable
 fun HomeStage() {
     val context = LocalContext.current
+    // Used only to reach `onBackPressedDispatcher` below — null on a host that somehow never
+    // wraps a ComponentActivity, in which case the back interception below simply can't attach
+    // (same fallback behavior as before this change existed).
+    val activity = remember(context) { context.findComponentActivity() }
     val scope = rememberCoroutineScope()
     // Safe at this scope even without a lexical PicoTheme wrapper here: Main.kt calls
     // `DefaultStage { PicoTheme { HomeStage() } }`, so this whole function body already runs
@@ -144,6 +168,12 @@ fun HomeStage() {
     var boardState by remember { mutableStateOf(freshBoardState(spawner)) }
     var characterController by remember { mutableStateOf<CharacterController?>(null) }
     var phase by remember { mutableStateOf<HopPhase>(HopPhase.NotStarted) }
+    // Freezes the round-timeout watchdog and the charge-visual tick (both read this below) while
+    // the exit-confirm panel is up — the run's only other "keep advancing while true" state, so
+    // this rides alongside them rather than introducing a second, redundant pause concept; there
+    // is no other pause/settings-open state anywhere else in this project to compose with instead.
+    var paused by remember { mutableStateOf(false) }
+    var showExitConfirm by remember { mutableStateOf(false) }
     var runStartedAtNanos by remember { mutableLongStateOf(0L) }
     // Flips true the instant a jump is committed (release, past the grace period) and back to
     // false once the next round begins — the single signal the round-timeout watchdog below
@@ -154,6 +184,34 @@ fun HomeStage() {
     // (oldest evicted first), so `last - first` is the span of the most recent landings once full —
     // see performJump's isFastStreak check below.
     val recentLandingTimestampsMs = remember { ArrayDeque<Long>() }
+
+    // Root-caused against a PICO app store review report ("遇到崩溃"): DefaultStage has no
+    // window chrome or close button, and several distinct physical controller inputs all get
+    // remapped by PICO OS into a plain KEYCODE_BACK KeyEvent (confirmed on real hardware) — left
+    // un-intercepted, ComponentActivity's default handling calls Activity.finish() immediately
+    // and silently kills the whole run mid-play with no crash at all. Registered once per
+    // `activity` (stable for the composition's lifetime), but reads `phase`/`runState` live on
+    // every fire, the same closure-over-local-state pattern PinchChargeController's `onRelease`
+    // callback below already relies on.
+    DisposableEffect(activity) {
+        val callback = object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (phase is HopPhase.Playing && runState.isAlive) {
+                    // Freeze first, then ask — same shape as `sfx`'s own ON_PAUSE/ON_RESUME
+                    // handling above, just triggered by back instead of a lifecycle event.
+                    paused = true
+                    sfx.pause()
+                    showExitConfirm = true
+                } else {
+                    // Start/result screens have no live run to protect — exit like the system
+                    // default would have.
+                    activity?.finish()
+                }
+            }
+        }
+        activity?.onBackPressedDispatcher?.addCallback(callback)
+        onDispose { callback.remove() }
+    }
 
     fun startNewRun() {
         runState = RunState()
@@ -291,7 +349,9 @@ fun HomeStage() {
             },
             onRelease = { cappedHeldMillis, isLeftHand ->
                 val controller = characterController ?: return@start
-                if (phase !is HopPhase.Playing || !runState.isAlive) return@start
+                // `paused` gates a live exit-confirm panel the same way `isAlive` already gates a
+                // finished run — a real hand release shouldn't commit a jump behind the dialog.
+                if (phase !is HopPhase.Playing || !runState.isAlive || paused) return@start
                 // A jump is already in flight (either the player's own, or the watchdog's forced one)
                 // — don't let a second release also grab the entity mid-animation.
                 if (jumpCommittedThisRound) return@start
@@ -329,6 +389,9 @@ fun HomeStage() {
         while (true) {
             delay(16)
             val state = PinchChargeController.chargeState.value
+            // Frozen for the exit-confirm panel: don't let a real hand pinch still visibly
+            // squash the frog or advance the charge cue behind the dialog while the run is held.
+            if (paused) continue
             indicatorBalls.update(state)
             characterController?.let { c ->
                 if (state.isCharging) c.applyChargeSquash(state.chargeFraction) else c.resetSquash()
@@ -361,7 +424,15 @@ fun HomeStage() {
             return@LaunchedEffect
         }
         sfx.startCountdown()
-        delay(ROUND_TIME_LIMIT_MS)
+        // Polls instead of one straight delay(ROUND_TIME_LIMIT_MS) so `paused` (the exit-confirm
+        // freeze) can hold this catch off indefinitely — only time actually spent unpaused counts
+        // toward the limit, so a player who takes 15 real seconds to decide on the exit dialog
+        // doesn't come back to an auto-fail that ran out the clock behind it.
+        var elapsedMs = 0L
+        while (elapsedMs < ROUND_TIME_LIMIT_MS) {
+            delay(ROUND_TIMEOUT_POLL_MS)
+            if (!paused) elapsedMs += ROUND_TIMEOUT_POLL_MS
+        }
         if (jumpCommittedThisRound) return@LaunchedEffect
         val controller = characterController ?: return@LaunchedEffect
         // Committed, same as a real release — blocks both a last-instant player pinch (below)
@@ -465,7 +536,20 @@ fun HomeStage() {
                                 diedInLotusPond = p.diedInLotusPond,
                                 onRetry = { startNewRun() },
                             )
-                            is HopPhase.Playing -> Unit
+                            is HopPhase.Playing -> AnimatedVisibility(
+                                visible = showExitConfirm,
+                                enter = fadeIn(),
+                                exit = fadeOut(),
+                            ) {
+                                ExitConfirmContent(
+                                    onCancel = {
+                                        showExitConfirm = false
+                                        paused = false
+                                        sfx.resume()
+                                    },
+                                    onExit = { activity?.finish() },
+                                )
+                            }
                         }
                     }
                 }
