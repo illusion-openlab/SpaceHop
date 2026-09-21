@@ -631,7 +631,7 @@ interface ChargeInput {
 export JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.20.1/libexec/openjdk.jdk/Contents/Home
 cd /Users/zohar/WorkSpace/Project/PicoProjects/SpaceHop
 ./gradlew :app:testDebugUnitTest --tests "tech.illusion.spacehop.content.ChargeHandTest"
-grep -o 'tests="[0-9]*" failures="[0-9]*" errors="[0-9]*"' \
+grep -o 'tests="[0-9]*" skipped="[0-9]*" failures="[0-9]*" errors="[0-9]*"' \
   app/build/test-results/testDebugUnitTest/TEST-tech.illusion.spacehop.content.ChargeHandTest.xml
 ```
 
@@ -979,7 +979,7 @@ class PointerChargeInput(
 export JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.20.1/libexec/openjdk.jdk/Contents/Home
 cd /Users/zohar/WorkSpace/Project/PicoProjects/SpaceHop
 ./gradlew :app:testDebugUnitTest --tests "tech.illusion.spacehop.content.PointerChargeInputTest"
-grep -o 'tests="[0-9]*" failures="[0-9]*" errors="[0-9]*"' \
+grep -o 'tests="[0-9]*" skipped="[0-9]*" failures="[0-9]*" errors="[0-9]*"' \
   app/build/test-results/testDebugUnitTest/TEST-tech.illusion.spacehop.content.PointerChargeInputTest.xml
 ```
 
@@ -1217,7 +1217,7 @@ suspend fun exitImmersive(
 export JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.20.1/libexec/openjdk.jdk/Contents/Home
 cd /Users/zohar/WorkSpace/Project/PicoProjects/SpaceHop
 ./gradlew :app:testDebugUnitTest --tests "tech.illusion.spacehop.content.ContainerSwitchTest"
-grep -o 'tests="[0-9]*" failures="[0-9]*" errors="[0-9]*"' \
+grep -o 'tests="[0-9]*" skipped="[0-9]*" failures="[0-9]*" errors="[0-9]*"' \
   app/build/test-results/testDebugUnitTest/TEST-tech.illusion.spacehop.content.ContainerSwitchTest.xml
 ```
 
@@ -1788,7 +1788,7 @@ object WindowScale {
 export JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.20.1/libexec/openjdk.jdk/Contents/Home
 cd /Users/zohar/WorkSpace/Project/PicoProjects/SpaceHop
 ./gradlew :app:testDebugUnitTest --tests "tech.illusion.spacehop.content.WindowScaleTest"
-grep -o 'tests="[0-9]*" failures="[0-9]*" errors="[0-9]*"' \
+grep -o 'tests="[0-9]*" skipped="[0-9]*" failures="[0-9]*" errors="[0-9]*"' \
   app/build/test-results/testDebugUnitTest/TEST-tech.illusion.spacehop.content.WindowScaleTest.xml
 ```
 
@@ -2200,7 +2200,7 @@ class JumpGrace {
 export JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.20.1/libexec/openjdk.jdk/Contents/Home
 cd /Users/zohar/WorkSpace/Project/PicoProjects/SpaceHop
 ./gradlew :app:testDebugUnitTest --tests "tech.illusion.spacehop.content.JumpGraceTest"
-grep -o 'tests="[0-9]*" failures="[0-9]*" errors="[0-9]*"' \
+grep -o 'tests="[0-9]*" skipped="[0-9]*" failures="[0-9]*" errors="[0-9]*"' \
   app/build/test-results/testDebugUnitTest/TEST-tech.illusion.spacehop.content.JumpGraceTest.xml
 ```
 
