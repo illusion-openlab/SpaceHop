@@ -92,16 +92,47 @@ class HopRun(context: Context, private val clock: HopClock) {
     private val boardAnimator = StageBoardAnimator(clock)
     private val highScoreStore = HighScoreStore(context)
 
-    /** 容器壳也要用：退出确认框冻结回合时 [Sfx.pause]，取消时 [Sfx.resume]。生命周期的
-     * 暂停/恢复与最终 `release` 由 [rememberHopRun] 负责，壳不必操心。 */
-    val sfx = Sfx(context)
+    private val sfx = Sfx(context)
+
+    /** 同时在飞的 [performJump] 层数。见该函数注释：它可以重入，而 [HopSession.isFlying]
+     * 是个布尔量，只有计数到 0 才该清掉。只在主线程的协程里加减，不需要原子类型。 */
+    private var flightDepth = 0
 
     /** 由 [buildScene] 赋值。普通 `var` 而不是 `mutableStateOf`：只在编排内部和两个壳的
-     * effect 里读写，从来不需要触发重组（与 [HopSession.recentLandingTimestampsMs] 同理）。 */
+     * effect 里读写，从来不需要触发重组（与 [HopSession.recentLandingTimestampsMs] 同理）。
+     *
+     * `@Volatile` 补的是另一回事——可见性，不是重组。唯一一次写发生在 `SpatialView.initial`
+     * 的挂起 lambda 里，读却来自各个 `LaunchedEffect` 协程和输入回调。`mutableStateOf` 原本
+     * 顺带提供了 happens-before 边，普通 `var` 没有；万一 SDK 把 `initial` 放在非主调度器上
+     * 跑，读侧就可能在写之后仍然看到 null，症状是「青蛙有时候不加载」。没人验过那个调度器，
+     * 这个注解不要钱，省得结论挂在一个没查过的 SDK 细节上。 */
+    @Volatile
     internal var characterController: CharacterController? = null
 
     /** 开局宽限期的基准，见 [JUMP_INPUT_GRACE_MS]。 */
     var runStartedAtNanos: Long = 0L
+
+    // ——— 音效入口 ———
+    // [Sfx] 实例本身不出这个类。它有 11 个公开方法，其中三个的所有权是有主的：`release` 属于
+    // [rememberHopRun] 的 onDispose（壳提前调用会打掉 SoundPool，之后每次 play 都静默无声，
+    // 不崩不报也不打日志），`startCountdown` / `stopStream` 属于回合超时看门狗。把实例直接交给
+    // 壳，等于把这三个也交出去，而 KDoc 里写「别调 release」只是记录了危险，没有消除它。
+    // 容器壳只有下面两个公开入口；其余转发是 internal，只给本文件的 [rememberHopRun] 用。
+
+    /** 退出确认框冻结时静音本局音效。壳只有这一个和 [resumeSfxFromDialog] 两个音频入口。 */
+    fun pauseSfxForDialog() = sfx.pause()
+
+    /** 取消退出确认框、回合解冻时恢复音效。 */
+    fun resumeSfxFromDialog() = sfx.resume()
+
+    internal fun pauseSfxForHostLifecycle() = sfx.pause()
+    internal fun resumeSfxForHostLifecycle() = sfx.resume()
+    internal fun releaseSfx() = sfx.release()
+    internal fun startCountdownSfx() = sfx.startCountdown()
+    internal fun stopCountdownSfx() = sfx.stopCountdown()
+    internal fun startStreamSfx() = sfx.startStream()
+    internal fun startChargeSfx() = sfx.startCharge()
+    internal fun stopChargeSfx() = sfx.stopCharge()
 
     /** 建立板面动画器与青蛙。两个容器壳的 `SpatialView.initial` 都调这个，所以场景构建只有
      * 一份。指尖球（[IndicatorBallsRenderer]）**不**在这里——它是沉浸壳独有的，窗口态没有手部
@@ -155,10 +186,18 @@ class HopRun(context: Context, private val clock: HopClock) {
      * stage's own cues (a single landing chime instead of perfect/success, a splash instead of
      * a clatter) — see [Sfx.playLotusLanding] / [StageBoardAnimator.playFallSound].
      *
-     * 整个函数体被 `try { ... } finally { HopSession.isFlying = false }` 包住：飞行中禁止切换
-     * 容器靠的就是这个标志（飞行状态住在 [CharacterController] 里，过不了容器），而 MISS 分支
-     * 里有 `return`，只有 `finally` 能保证任何出口——包括抛异常——都会把它清掉。 */
+     * 整个函数体被 `try { ... } finally { ... }` 包住：飞行中禁止切换容器靠的就是
+     * [HopSession.isFlying]（飞行状态住在 [CharacterController] 里，过不了容器），而 MISS 分支
+     * 里有 `return`，只有 `finally` 能保证任何出口——包括抛异常——都会把它清掉。
+     *
+     * 清的是 [flightDepth] 而不是直接写 `false`：本函数可以重入。它在
+     * `coroutineScope { recenterTo / animateAdvance }` （约 240ms）之前就把
+     * [HopSession.jumpCommittedThisRound] 置回了 false，所以那段窗口里玩家再松一次手能过掉
+     * 全部守卫，`scope.launch` 出第二个并发的 performJump。谁先跑完谁的 `finally`——直接写
+     * `false` 就会在另一次还在动画时把标志清掉，切换按钮中途解禁，正好是这个标志要防的事。
+     * 重叠起跳这个窗口本身是既有行为，不在本次改动范围内；这里只让标志本身可重入。 */
     suspend fun performJump(flightDistance: Float, trigger: String) {
+        flightDepth++
         HopSession.isFlying = true
         try {
             val controller = characterController ?: return
@@ -229,7 +268,7 @@ class HopRun(context: Context, private val clock: HopClock) {
                 boardAnimator.prepareWindowCrossing(upcoming)
             }
         } finally {
-            HopSession.isFlying = false
+            if (--flightDepth == 0) HopSession.isFlying = false
         }
     }
 }
@@ -255,11 +294,11 @@ fun rememberHopRun(
     val run = remember(clock) { HopRun(context, clock) }
 
     val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner, run.sfx) {
+    DisposableEffect(lifecycleOwner, run) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_PAUSE -> run.sfx.pause()
-                Lifecycle.Event.ON_RESUME -> run.sfx.resume()
+                Lifecycle.Event.ON_PAUSE -> run.pauseSfxForHostLifecycle()
+                Lifecycle.Event.ON_RESUME -> run.resumeSfxForHostLifecycle()
                 else -> {}
             }
         }
@@ -295,7 +334,7 @@ fun rememberHopRun(
                 // forced jumps (same LaunchedEffect) deliberately leave it playing instead.
                 HopSession.jumpCommittedThisRound = true
                 onHaptic(HandControllerHapticType.Press, hand)
-                run.sfx.stopCountdown()
+                run.stopCountdownSfx()
                 // V2: a window-crossing target is a guaranteed-success beat, flown at its own exact
                 // (compound) distance rather than whatever the player charged — see performJump.
                 val target = HopSession.boardState.platforms[1]
@@ -311,7 +350,7 @@ fun rememberHopRun(
                 scope.launch { run.performJump(flightDistance, trigger = "player") }
             },
         )
-        onDispose { chargeInput.stop(); run.sfx.release() }
+        onDispose { chargeInput.stop(); run.releaseSfx() }
     }
 
     LaunchedEffect(Unit) {
@@ -331,8 +370,8 @@ fun rememberHopRun(
             // Edge-triggered, not level-triggered — mirrors the indicator-ball/squash feedback
             // above by staying ungated on `phase` (charging still visually reacts on the start
             // /result screens today; the sound follows the same existing behaviour).
-            if (state.isCharging && !wasCharging) run.sfx.startCharge()
-            else if (!state.isCharging && wasCharging) run.sfx.stopCharge()
+            if (state.isCharging && !wasCharging) run.startChargeSfx()
+            else if (!state.isCharging && wasCharging) run.stopChargeSfx()
             wasCharging = state.isCharging
         }
     }
@@ -352,10 +391,10 @@ fun rememberHopRun(
         // countdown-and-catch mechanism. Never returns to the kitchen stage, so once this branch
         // is taken it's taken for the rest of the run (StageBoard.advance's one-way transition).
         if (HopSession.boardState.current.kind == PlatformKind.LOTUS) {
-            run.sfx.startStream()
+            run.startStreamSfx()
             return@LaunchedEffect
         }
-        run.sfx.startCountdown()
+        run.startCountdownSfx()
         // Polls instead of one straight delay(ROUND_TIME_LIMIT_MS) so `paused` (the exit-confirm
         // freeze) can hold this catch off indefinitely — only time actually spent unpaused counts
         // toward the limit, so a player who takes 15 real seconds to decide on the exit dialog

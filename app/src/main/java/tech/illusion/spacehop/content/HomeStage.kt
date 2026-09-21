@@ -119,7 +119,7 @@ fun HomeStage() {
                     // handling (now in rememberHopRun), just triggered by back instead of a
                     // lifecycle event.
                     HopSession.paused = true
-                    run.sfx.pause()
+                    run.pauseSfxForDialog()
                     showExitConfirm = true
                 } else {
                     // Start/result screens have no live run to protect — exit like the system
@@ -234,7 +234,7 @@ fun HomeStage() {
                                     onCancel = {
                                         showExitConfirm = false
                                         HopSession.paused = false
-                                        run.sfx.resume()
+                                        run.resumeSfxFromDialog()
                                     },
                                     onExit = { activity?.finish() },
                                 )
