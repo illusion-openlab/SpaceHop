@@ -73,6 +73,25 @@ internal const val ROUND_TIMEOUT_POLL_MS = 100L
 internal const val CHARACTER_GROUND_Y = 0f
 
 /**
+ * 吞掉紧跟在一次 SpatialUI 按钮按下之后的那一次松手。
+ *
+ * 为什么需要：在沉浸态里按任何按钮本身就是一次捏合，而 [PinchChargeController] 独立于按钮
+ * 监听裸手距离——同一次物理松手会同时被按钮和蓄力状态机看到，后者会把它读成一次完整蓄力并
+ * 立即起跳。这个机制原本是为「开始」按钮写的（[JUMP_INPUT_GRACE_MS]），「退出沉浸」按钮
+ * 复用同一套。
+ */
+class JumpGrace {
+    private var armedUntilNanos: Long = Long.MIN_VALUE
+
+    /** 在按钮按下的瞬间调用。 */
+    fun armAt(pressNanos: Long) {
+        armedUntilNanos = pressNanos + JUMP_INPUT_GRACE_MS * 1_000_000L
+    }
+
+    fun shouldSwallow(nowNanos: Long): Boolean = nowNanos < armedUntilNanos
+}
+
+/**
  * 一局游戏的编排：场景构建、开局、起跳判定、结算。
  *
  * 这里只放两个容器**完全相同**的部分。容器各自不同的东西——输入源、帧钟、根实体的摆位与缩放、
@@ -111,6 +130,9 @@ class HopRun(context: Context, private val clock: HopClock) {
 
     /** 开局宽限期的基准，见 [JUMP_INPUT_GRACE_MS]。 */
     var runStartedAtNanos: Long = 0L
+
+    /** 「退出沉浸」按钮的松手吞没窗口，见 [JumpGrace]。 */
+    val jumpGrace = JumpGrace()
 
     // ——— 音效入口 ———
     // [Sfx] 实例本身不出这个类。它有 11 个公开方法，其中三个的所有权是有主的：`release` 属于
@@ -327,8 +349,11 @@ fun rememberHopRun(
                 // A jump is already in flight (either the player's own, or the watchdog's forced one)
                 // — don't let a second release also grab the entity mid-animation.
                 if (HopSession.jumpCommittedThisRound) return@start
-                val sinceRunStartMs = (System.nanoTime() - run.runStartedAtNanos) / 1_000_000L
+                val nowNanos = System.nanoTime()
+                val sinceRunStartMs = (nowNanos - run.runStartedAtNanos) / 1_000_000L
                 if (sinceRunStartMs < JUMP_INPUT_GRACE_MS) return@start
+                // 按钮按下带来的那次松手不是玩家想跳——见 JumpGrace。
+                if (run.jumpGrace.shouldSwallow(nowNanos)) return@start
                 // Committed — the round-timeout watchdog below reads this to know a real jump beat
                 // the clock. Only a genuine player jump cuts the countdown cue short; the app's own
                 // forced jumps (same LaunchedEffect) deliberately leave it playing instead.

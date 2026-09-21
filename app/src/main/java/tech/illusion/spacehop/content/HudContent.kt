@@ -8,10 +8,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
+import com.pico.spatial.ui.design.Button
 import com.pico.spatial.ui.design.PicoTheme
 import com.pico.spatial.ui.design.Text
 import com.pico.spatial.ui.foundation.material.backgroundMaterial
 import com.pico.spatial.ui.platform.Material
+import tech.illusion.spacehop.game.HopSession
 
 /** design-contract.md §2/§3: hud_score always shown; hud_combo_badge only when streak >= 1.
  *
@@ -20,7 +22,7 @@ import com.pico.spatial.ui.platform.Material
  * score, and a new-record result title). The combo badge stays neutral so it doesn't compete
  * with the score for the same accent. */
 @Composable
-fun HudContent(score: Int, comboStreak: Int) {
+fun HudContent(score: Int, comboStreak: Int, onExitImmersive: (() -> Unit)? = null) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         // No fixed width — the panel wraps its content (the score, or score + combo badge once a
@@ -47,6 +49,14 @@ fun HudContent(score: Int, comboStreak: Int) {
                     .backgroundMaterial(false, Material.Regular)
                     .padding(horizontal = 10.dp, vertical = 4.dp),
             )
+        }
+        if (onExitImmersive != null) {
+            Button(
+                onClick = onExitImmersive,
+                // 飞行中置灰：飞行动画状态在 CharacterController 里、不在 HopSession 里。
+                enabled = HopSession.canSwitchContainer(),
+                modifier = Modifier.padding(start = 10.dp),
+            ) { Text("退出沉浸") }
         }
     }
 }

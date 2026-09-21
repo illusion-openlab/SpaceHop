@@ -17,6 +17,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import com.pico.spatial.core.ecs.Entity
@@ -28,7 +29,9 @@ import com.pico.spatial.ui.design.PicoTheme
 import com.pico.spatial.ui.foundation.content.SpatialView
 import com.pico.spatial.ui.platform.HandController
 import com.pico.spatial.ui.platform.LocalHandControllerHaptic
+import com.pico.spatial.ui.platform.containers.LocalSpatialNavigator
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import tech.illusion.spacehop.game.HopPhase
 import tech.illusion.spacehop.game.HopSession
 
@@ -79,6 +82,8 @@ fun ImmersiveHome() {
     // body already runs inside a PicoTheme composition. Feeds controller-trigger charge/jump
     // input below — a no-op when the player is bare-handed with no controller connected.
     val controllerHaptic = LocalHandControllerHaptic.current
+    val navigator = LocalSpatialNavigator.current
+    val scope = rememberCoroutineScope()
     val hmd = remember { HMDTrackingProvider() }
     val anchor = remember { Entity() }
     val chargeInput = remember { PinchChargeController() }
@@ -252,7 +257,19 @@ fun ImmersiveHome() {
                         enter = fadeIn(),
                         exit = fadeOut(),
                     ) {
-                        HudContent(score = HopSession.runState.score, comboStreak = HopSession.runState.comboStreak)
+                        HudContent(
+                            score = HopSession.runState.score,
+                            comboStreak = HopSession.runState.comboStreak,
+                            onExitImmersive = {
+                                run.jumpGrace.armAt(System.nanoTime())
+                                scope.launch {
+                                    exitImmersive(
+                                        openWindow = { navigator.openWindowContainer(MAIN_WINDOW_ID) },
+                                        closeStage = { navigator.closeStage() },
+                                    )
+                                }
+                            },
+                        )
                     }
                 }
             }
