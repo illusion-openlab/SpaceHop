@@ -53,8 +53,11 @@ data class ChargeUiState(
  * can end it (see the `chargingIsLeftHand` checks in both [processHandFrame] and
  * [onControllerAction]); the rest of the game only ever sees `chargingIsLeftHand`/
  * `chargeStartNanos`, so it never needs to know which input method was actually used.
+ *
+ * 不再是 `object`：现在有两个容器会交替 [start]/[stop] 输入源，共享一个全局可变单例迟早会出
+ * 现一个容器的 stop 清掉另一个容器刚建好的回调。由容器各自 `remember` 一个实例。
  */
-object PinchChargeController {
+class PinchChargeController : ChargeInput {
 
     private val handProvider = HandTrackingProvider()
     private val controllerProvider = ControllerTrackingProvider()
@@ -80,20 +83,20 @@ object PinchChargeController {
     private var lastHandPositions = IndicatorPositions()
 
     private val _chargeState = MutableStateFlow(ChargeUiState())
-    val chargeState: StateFlow<ChargeUiState> = _chargeState
+    override val chargeState: StateFlow<ChargeUiState> = _chargeState
 
-    private var onChargeStart: ((isLeftHand: Boolean) -> Unit)? = null
-    private var onRelease: ((cappedHeldMillis: Long, isLeftHand: Boolean) -> Unit)? = null
+    private var onChargeStartCallback: ((ChargeHand?) -> Unit)? = null
+    private var onReleaseCallback: ((cappedHeldMillis: Long, hand: ChargeHand?) -> Unit)? = null
 
     private val controllerActionListener =
         ControllerTrackingProvider.ControllerActionListener { action -> onControllerAction(action) }
 
-    fun start(
-        onChargeStart: (isLeftHand: Boolean) -> Unit,
-        onRelease: (cappedHeldMillis: Long, isLeftHand: Boolean) -> Unit,
+    override fun start(
+        onChargeStart: (ChargeHand?) -> Unit,
+        onRelease: (cappedHeldMillis: Long, hand: ChargeHand?) -> Unit,
     ) {
-        this.onChargeStart = onChargeStart
-        this.onRelease = onRelease
+        this.onChargeStartCallback = onChargeStart
+        this.onReleaseCallback = onRelease
         handProvider.start()
         controllerProvider.addControllerActionListener(controllerActionListener)
         controllerProvider.start()
@@ -102,7 +105,7 @@ object PinchChargeController {
         }
     }
 
-    fun stop() {
+    override fun stop() {
         job?.cancel()
         job = null
         handProvider.stop()
@@ -199,14 +202,14 @@ object PinchChargeController {
     private fun beginCharge(isLeftHand: Boolean) {
         chargingIsLeftHand = isLeftHand
         chargeStartNanos = System.nanoTime()
-        onChargeStart?.invoke(isLeftHand)
+        onChargeStartCallback?.invoke(ChargeHand.fromIsLeft(isLeftHand))
     }
 
     private fun endCharge() {
         val heldMillis = (System.nanoTime() - chargeStartNanos) / 1_000_000L
         val isLeftHand = chargingIsLeftHand ?: return
         chargingIsLeftHand = null
-        onRelease?.invoke(ChargeCurve.cappedChargeMillis(heldMillis), isLeftHand)
+        onReleaseCallback?.invoke(ChargeCurve.cappedChargeMillis(heldMillis), ChargeHand.fromIsLeft(isLeftHand))
     }
 
     private fun publishState() {

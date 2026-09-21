@@ -146,6 +146,7 @@ fun HomeStage() {
     val controllerHaptic = LocalHandControllerHaptic.current
     val hmd = remember { HMDTrackingProvider() }
     val anchor = remember { Entity() }
+    val chargeInput = remember { PinchChargeController() }
     val indicatorBalls = remember { IndicatorBallsRenderer() }
     val sfx = remember { Sfx(context) }
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -337,17 +338,19 @@ fun HomeStage() {
     }
 
     DisposableEffect(Unit) {
-        PinchChargeController.start(
+        chargeInput.start(
             // Controller-trigger input only (bare-hand pinch has no "press start" moment worth
             // a buzz for) — a light tap so charging registers without masking the stronger jump
             // pulse below.
-            onChargeStart = { isLeftHand ->
-                controllerHaptic.feedback(
-                    HandControllerHapticType.Hover,
-                    if (isLeftHand) HandController.Left else HandController.Right,
-                )
+            onChargeStart = { hand ->
+                val hapticTarget = when (hand) {
+                    ChargeHand.LEFT -> HandController.Left
+                    ChargeHand.RIGHT -> HandController.Right
+                    null -> HandController.Unknown
+                }
+                controllerHaptic.feedback(HandControllerHapticType.Hover, hapticTarget)
             },
-            onRelease = { cappedHeldMillis, isLeftHand ->
+            onRelease = { cappedHeldMillis, hand ->
                 val controller = characterController ?: return@start
                 // `paused` gates a live exit-confirm panel the same way `isAlive` already gates a
                 // finished run — a real hand release shouldn't commit a jump behind the dialog.
@@ -361,10 +364,12 @@ fun HomeStage() {
                 // the clock. Only a genuine player jump cuts the countdown cue short; the app's own
                 // forced jumps (same LaunchedEffect) deliberately leave it playing instead.
                 jumpCommittedThisRound = true
-                controllerHaptic.feedback(
-                    HandControllerHapticType.Press,
-                    if (isLeftHand) HandController.Left else HandController.Right,
-                )
+                val hapticTarget = when (hand) {
+                    ChargeHand.LEFT -> HandController.Left
+                    ChargeHand.RIGHT -> HandController.Right
+                    null -> HandController.Unknown
+                }
+                controllerHaptic.feedback(HandControllerHapticType.Press, hapticTarget)
                 sfx.stopCountdown()
                 // V2: a window-crossing target is a guaranteed-success beat, flown at its own exact
                 // (compound) distance rather than whatever the player charged — see performJump.
@@ -381,14 +386,14 @@ fun HomeStage() {
                 scope.launch { performJump(controller, flightDistance, trigger = "player") }
             },
         )
-        onDispose { PinchChargeController.stop(); sfx.release() }
+        onDispose { chargeInput.stop(); sfx.release() }
     }
 
     LaunchedEffect(Unit) {
         var wasCharging = false
         while (true) {
             delay(16)
-            val state = PinchChargeController.chargeState.value
+            val state = chargeInput.chargeState.value
             // Frozen for the exit-confirm panel: don't let a real hand pinch still visibly
             // squash the frog or advance the charge cue behind the dialog while the run is held.
             if (paused) continue
