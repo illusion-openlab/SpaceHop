@@ -16,7 +16,7 @@
 
 - **不新增任何依赖。** `app/build.gradle.kts` 的 `dependencies {}` 块不得改动。已实测确认：`androidx.compose.runtime` 的 `mutableStateOf` 与 `kotlinx.coroutines.runBlocking` 在单测 JVM classpath 上可用，无需 `kotlinx-coroutines-test`。
 - **测试用 JUnit 4 + `runBlocking`**，不要用 `runTest` / `TestScope` / `advanceTimeBy`（依赖不存在）。
-- **不改动玩法规则文件**：`game/DifficultyCurve.kt`、`game/PlatformSpawner.kt`、`game/LandingJudge.kt`、`game/ScoreRules.kt`、`game/StageBoard.kt`、`game/ChargeCurve.kt`、`game/PinchStateMachine.kt`、`game/PinchGeometry.kt`、`game/ChargeIndicatorColor.kt`、`game/HighScoreStore.kt`、`game/RunState.kt`（`PlatformSpec` / `PlatformKind` / `LandingResult` 都定义在 `game/LandingJudge.kt` 里，没有单独的 `PlatformSpec.kt`）。现有 13 个测试文件（含模板 `ExampleUnitTest`）必须保持全绿且不被修改。
+- **不改动玩法规则文件**：`game/DifficultyCurve.kt`、`game/PlatformSpawner.kt`、`game/LandingJudge.kt`、`game/ScoreRules.kt`、`game/StageBoard.kt`、`game/ChargeCurve.kt`、`game/PinchStateMachine.kt`、`game/PinchGeometry.kt`、`game/ChargeIndicatorColor.kt`、`game/HighScoreStore.kt`、`game/RunState.kt`（`PlatformSpec` / `PlatformKind` / `LandingResult` 都定义在 `game/LandingJudge.kt` 里，没有单独的 `PlatformSpec.kt`）。本计划开工前就存在的那 13 个测试文件（含模板 `ExampleUnitTest`）必须保持全绿且不被修改；本计划前序任务新增的测试文件同样必须保持全绿。任务内的"期望 xml 文件数"要把前序任务新增的算进去。
 - **UI 一律 SpatialUI + `PicoTheme`**（`com.pico.spatial.ui.design.*`）。禁止 `androidx.compose.material` / `material3` / `MaterialTheme`。
 - **构建与测试命令**（每次都要先 export，环境变量不跨 Bash 调用持续）：
   ```bash
