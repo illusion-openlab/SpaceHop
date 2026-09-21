@@ -176,6 +176,11 @@ class HopRun(context: Context, private val clock: HopClock) {
     fun bestScore(): Int? = highScoreStore.bestScore()
 
     fun startNewRun() {
+        // M2 fix: HopSession.startNewRun resets `isFlying`, but the reentrancy counter backing it
+        // lives here and was never reset alongside it. Not reachable today (a fresh run only ever
+        // starts from NotStarted/Result, both non-flying), but insurance against a future path
+        // that starts a run mid-flight leaving `isFlying` stuck true with no in-app recovery.
+        flightDepth = 0
         HopSession.startNewRun(spawner)
         val fresh = HopSession.boardState
         boardAnimator.placeInstant(fresh) // cold reset, not a landing — no slide/fade

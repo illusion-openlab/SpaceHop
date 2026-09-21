@@ -35,6 +35,7 @@ import kotlinx.coroutines.launch
 import tech.illusion.spacehop.game.HopPhase
 import tech.illusion.spacehop.game.HopSession
 
+private const val TAG = "SpaceHopImmersive"
 private const val PRIMARY_PANEL = "primary"
 private const val SIDE_PANEL = "side"
 private const val SIDE_OFFSET_M = 0.32f
@@ -178,7 +179,15 @@ fun ImmersiveHome() {
             content.addEntity(anchor)
             indicatorBalls.build(content)
 
-            run.buildScene(anchor)
+            try {
+                run.buildScene(anchor)
+            } finally {
+                // 从窗口切过来时会话是冻结的（ContainerSwitch.enterImmersive 设的），场景建好了才
+                // 解冻；就算 buildScene 抛异常（例如资源加载失败）也必须解冻，否则回合超时看门狗永远
+                // 冻结、蓄力输入永远被拒，玩家除了重启 App 没有别的恢复路径（M3 修复）。
+                // 冷启动时它本来就是 false，这行是幂等的。
+                HopSession.onContainerSwitchSettled()
+            }
 
             attachments.entity(PRIMARY_PANEL)?.let {
                 // Floats in front of the stage, between the player and the platforms — NOT
@@ -205,9 +214,6 @@ fun ImmersiveHome() {
                 it.components[TransformComponent::class.java]?.setPosition(Vector3(SIDE_OFFSET_M, 0f, 0f))
                 anchor.addChild(it)
             }
-            // 从窗口切过来时会话是冻结的（ContainerSwitch.enterImmersive 设的），场景建好了才解冻。
-            // 冷启动时它本来就是 false，这行是幂等的。
-            HopSession.onContainerSwitchSettled()
         },
         attachments = {
             AttachmentPanel(PRIMARY_PANEL) {
@@ -252,25 +258,32 @@ fun ImmersiveHome() {
             }
             AttachmentPanel(SIDE_PANEL) {
                 PicoTheme {
-                    AnimatedVisibility(
-                        visible = HopSession.phase is HopPhase.Playing,
-                        enter = fadeIn(),
-                        exit = fadeOut(),
-                    ) {
-                        HudContent(
-                            score = HopSession.runState.score,
-                            comboStreak = HopSession.runState.comboStreak,
-                            onExitImmersive = {
-                                run.jumpGrace.armAt(System.nanoTime())
-                                scope.launch {
-                                    exitImmersive(
-                                        openWindow = { navigator.openWindowContainer(MAIN_WINDOW_ID) },
-                                        closeStage = { navigator.closeStage() },
-                                    )
+                    // I1 fix: the exit affordance must not depend on phase — it used to live behind
+                    // `AnimatedVisibility(visible = phase is Playing)`, so a player who entered
+                    // immersive before ever starting a run (NotStarted), or who just finished one
+                    // (Result), had no way back to the window. The panel itself is now always
+                    // rendered in every phase; HudContent hides its own score/combo content when
+                    // not Playing (it has no meaning outside a run) while keeping the button live.
+                    HudContent(
+                        score = HopSession.runState.score,
+                        comboStreak = HopSession.runState.comboStreak,
+                        onExitImmersive = {
+                            run.jumpGrace.armAt(System.nanoTime())
+                            scope.launch {
+                                // I2 fix: the outcome used to be dropped on the floor, so a refusal
+                                // (e.g. mid-flight) looked in the field like "the button did
+                                // nothing" with zero logcat evidence — mirrors WindowHome.kt's own
+                                // openImmersiveStage logging convention.
+                                val outcome = exitImmersive(
+                                    openWindow = { navigator.openWindowContainer(MAIN_WINDOW_ID) },
+                                    closeStage = { navigator.closeStage() },
+                                )
+                                if (outcome != SwitchOutcome.SWITCHED) {
+                                    Log.e(TAG, "exitImmersive did not switch: outcome=$outcome")
                                 }
-                            },
-                        )
-                    }
+                            }
+                        },
+                    )
                 }
             }
         },

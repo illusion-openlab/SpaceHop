@@ -13,6 +13,7 @@ import com.pico.spatial.ui.design.PicoTheme
 import com.pico.spatial.ui.design.Text
 import com.pico.spatial.ui.foundation.material.backgroundMaterial
 import com.pico.spatial.ui.platform.Material
+import tech.illusion.spacehop.game.HopPhase
 import tech.illusion.spacehop.game.HopSession
 
 /** design-contract.md §2/§3: hud_score always shown; hud_combo_badge only when streak >= 1.
@@ -33,22 +34,28 @@ fun HudContent(score: Int, comboStreak: Int, onExitImmersive: (() -> Unit)? = nu
             .backgroundMaterial(true, Material.Regular)
             .padding(16.dp),
     ) {
-        Text(
-            text = score.toString(),
-            style = PicoTheme.typography.displayLarge,
-            color = PanelStyle.Accent,
-        )
-        if (comboStreak >= 1) {
+        // I1 fix: ImmersiveHome.kt now renders this panel unconditionally (NotStarted/Playing/
+        // Result), so the score/combo readout — meaningless outside an actual run — is gated here
+        // instead, reading HopSession.phase directly rather than growing a new parameter. The exit
+        // button below stays unconditional on `onExitImmersive != null`, independent of phase.
+        if (HopSession.phase is HopPhase.Playing) {
             Text(
-                text = "连击 x$comboStreak",
-                style = PicoTheme.typography.labelLarge,
-                color = PicoTheme.colorScheme.labelSecondary,
-                modifier = Modifier
-                    .padding(start = 10.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .backgroundMaterial(false, Material.Regular)
-                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                text = score.toString(),
+                style = PicoTheme.typography.displayLarge,
+                color = PanelStyle.Accent,
             )
+            if (comboStreak >= 1) {
+                Text(
+                    text = "连击 x$comboStreak",
+                    style = PicoTheme.typography.labelLarge,
+                    color = PicoTheme.colorScheme.labelSecondary,
+                    modifier = Modifier
+                        .padding(start = 10.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .backgroundMaterial(false, Material.Regular)
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                )
+            }
         }
         if (onExitImmersive != null) {
             Button(

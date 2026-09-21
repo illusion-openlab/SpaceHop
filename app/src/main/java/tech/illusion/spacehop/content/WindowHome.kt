@@ -141,17 +141,10 @@ fun WindowHome() {
                     halfH = dpToLength(size3D.height.toDp(), LengthUnit.Meters) / 2f
                     halfD = dpToLength(size3D.depth.toDp(), LengthUnit.Meters) / 2f
                 }
-                // Task 10 的真机取证锚点：沙盘摆位对不对只能靠实测三围反推，截图给不出可信数值。
-                // 判据：originZ + MAX_FOOTPRINT_RADIUS_M*scale <= halfD（当前平台不捅出前表面），
-                // 且 originY + SCENE_HEIGHT_M*scale <= halfH（跳跃弧不顶出天花板）。
-                val measuredScale = WindowScale.fitScale(halfW, halfH, halfD)
-                Log.e(
-                    TAG,
-                    "view box measured: halfW=$halfW halfH=$halfH halfD=$halfD " +
-                        "scale=$measuredScale " +
-                        "originY=${WindowScale.originOffsetY(halfH, measuredScale)} " +
-                        "originZ=${WindowScale.originOffsetZ(measuredScale)}",
-                )
+                // Task 10 的真机取证锚点（已在门禁 B 完成，见 ledger）：沙盘摆位对不对只能靠实测
+                // 三围反推，截图给不出可信数值。判据：originZ + MAX_FOOTPRINT_RADIUS_M*scale <=
+                // halfD（当前平台不捅出前表面），且 originY + SCENE_HEIGHT_M*scale <= halfH（跳跃弧
+                // 不顶出天花板）。取证已完成，M1 修复：移除每帧都在 ERROR 级别触发的调试 Log.e。
             }
             // 蓄力手势只在真正能跳的时候挂载。工具条上的按钮位于 SpatialView 之外，物理上
             // 不重叠——已知教训：拖拽检测器条件性消费事件、点击检测器一见消费就取消，两个
@@ -181,12 +174,17 @@ fun WindowHome() {
             },
         initial = { content, _ ->
             content.addEntity(sceneRoot)
-            run.buildScene(sceneRoot)
-            // 场景建完，让上面那个 LaunchedEffect 带着当前（可能已经测量到的）scale 再落一次
-            // transform，而不是让这里去写一份可能已经过期的值。
-            sceneBuilt = true
-            // 从沉浸切回来时会话是冻结的，场景建好了才解冻。冷启动时本来就是 false，幂等。
-            HopSession.onContainerSwitchSettled()
+            try {
+                run.buildScene(sceneRoot)
+                // 场景建完，让上面那个 LaunchedEffect 带着当前（可能已经测量到的）scale 再落一次
+                // transform，而不是让这里去写一份可能已经过期的值。
+                sceneBuilt = true
+            } finally {
+                // 从沉浸切回来时会话是冻结的，场景建好了才解冻；就算 buildScene 抛异常（例如资源
+                // 加载失败）也必须解冻，否则回合超时看门狗永远冻结、蓄力输入永远被拒，玩家除了
+                // 重启 App 没有别的恢复路径（M3 修复）。冷启动时本来就是 false，幂等。
+                HopSession.onContainerSwitchSettled()
+            }
         },
         attachments = {},
     )

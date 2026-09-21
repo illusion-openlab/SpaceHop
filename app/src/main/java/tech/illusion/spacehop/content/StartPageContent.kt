@@ -42,8 +42,20 @@ import tech.illusion.spacehop.R
 
 /** design-contract.md §2 (v3 increment): gameplay_entry_button / gameplay_info_overlay. Sizing for
  * the info card and its entry badge — not covered by [PanelStyle], which only holds values shared
- * by every card (corner radius, the app's one accent). */
-private val GAMEPLAY_CARD_WIDTH: Dp = 460.dp
+ * by every card (corner radius, the app's one accent).
+ *
+ * I3 fix (final whole-branch review): this card is a child of start_page's own outer
+ * `backgroundMaterial` Box (see [StartPageContent] — a plain `Box(contentAlignment = Center)` with
+ * no fixed size of its own, so it grows to fit its widest child), which then adds its own 32dp×2
+ * padding on top. At the old 460dp this card forced that OUTER box to 460+64=524dp when the
+ * overlay opened — over this workspace's empirically measured ~476dp threshold past which a
+ * `backgroundMaterial` glass card renders every child blank with no error and no log line (see
+ * project memory: backgroundmaterial-hides-own-children-when-wide.md). Because the overlay and
+ * start_title/start_best_score/start_button all live in that *same* outer box, blowing that
+ * threshold blanked the whole start page, not just the overlay card. 380dp keeps the outer box at
+ * 380+64=444dp, ~32dp of real margin under 476dp — don't raise this back toward 412dp (the exact
+ * break-even) without re-checking that margin. */
+private val GAMEPLAY_CARD_WIDTH: Dp = 380.dp
 private val GAMEPLAY_CARD_MAX_HEIGHT: Dp = 420.dp
 private val GAMEPLAY_BADGE_SIZE: Dp = 18.dp
 
