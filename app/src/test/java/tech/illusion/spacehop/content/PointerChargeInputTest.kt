@@ -106,8 +106,10 @@ class PointerChargeInputTest {
 
         input.stop()
         input.onPressDown()
+        assertFalse(input.chargeState.value.isCharging)
+        clock.advanceMs(300L)
+        input.onPressUp()
 
         assertEquals(0, releaseCount)
-        assertFalse(input.chargeState.value.isCharging)
     }
 }
