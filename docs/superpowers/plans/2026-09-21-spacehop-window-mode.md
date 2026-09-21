@@ -2093,7 +2093,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - Consumes: `exitImmersive`（Task 5）、`HopSession`（Task 2）
 - Produces:
   - `HudContent(score, comboStreak, onExitImmersive: (() -> Unit)? = null)`——默认 null 使窗口壳的调用不变
-  - `HopRun.swallowNextReleaseUntil(nanos: Long)` 与 `HopRun.shouldSwallowRelease(nowNanos: Long): Boolean`
+  - `class JumpGrace { fun armAt(pressNanos: Long); fun shouldSwallow(nowNanos: Long): Boolean }`，持有为 `HopRun.jumpGrace`
 
 **已知陷阱**：按「退出沉浸」这个动作本身就是一次捏合，而 `PinchChargeController` 独立于按钮监听
 裸手距离，会把同一次物理松手读成一次完整蓄力并立即起跳。现有代码已经为「开始」按钮解决过这个
