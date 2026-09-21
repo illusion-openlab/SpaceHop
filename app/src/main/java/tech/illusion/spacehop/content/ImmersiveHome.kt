@@ -53,7 +53,7 @@ private const val PRIMARY_PANEL_TILT_PITCH_DEGREES = -20f
 /** Walks the `ContextWrapper` chain from a Compose [LocalContext] to find the hosting
  * `ComponentActivity` — `SpatialLaunchActivity` still resolves down to `ComponentActivity` (per
  * the SDK's own Activity-customization doc: "its superclass should be ComponentActivity or a
- * subclass of it"), so `onBackPressedDispatcher` is reachable this way even though HomeStage
+ * subclass of it"), so `onBackPressedDispatcher` is reachable this way even though ImmersiveHome
  * never sees the Activity directly. */
 private tailrec fun Context.findComponentActivity(): ComponentActivity? = when (this) {
     is ComponentActivity -> this
@@ -61,24 +61,23 @@ private tailrec fun Context.findComponentActivity(): ComponentActivity? = when (
     else -> null
 }
 
-/** Task 10 gate: the full loop with all three SpatialUI panels. `primary` (front, blocking)
- * shows start_page or result_panel; `side` (beside, non-blocking) shows hud only while
- * playing — mirrors `SpaceLianliankan/content/BoardStage.kt`'s two-attachment-slot pattern.
+/** 沉浸态（Stage）的壳：捏合/扳机输入、HMD 头高校准、`StageCalibration` 摆位、三块
+ * AttachmentPanel。玩法编排在 [rememberHopRun]。
  *
- * 沉浸态这一个容器的壳：输入源用捏合/扳机，帧钟用 vsync 对齐的 [HopClocks.frameAligned]，
- * 加上指尖球、HMD 身高标定、退出确认框和面板摆位。玩法本身一行都不在这里——全部在
- * [rememberHopRun] 里，与窗口壳共用同一份。 */
+ * Task 10 gate: the full loop with all three SpatialUI panels. `primary` (front, blocking)
+ * shows start_page or result_panel; `side` (beside, non-blocking) shows hud only while
+ * playing — mirrors `SpaceLianliankan/content/BoardStage.kt`'s two-attachment-slot pattern. */
 @Composable
-fun HomeStage() {
+fun ImmersiveHome() {
     val context = LocalContext.current
     // Used only to reach `onBackPressedDispatcher` below — null on a host that somehow never
     // wraps a ComponentActivity, in which case the back interception below simply can't attach
     // (same fallback behavior as before this change existed).
     val activity = remember(context) { context.findComponentActivity() }
     // Safe at this scope even without a lexical PicoTheme wrapper here: Main.kt calls
-    // `DefaultStage { PicoTheme { HomeStage() } }`, so this whole function body already runs
-    // inside a PicoTheme composition. Feeds controller-trigger charge/jump input below — a no-op
-    // when the player is bare-handed with no controller connected.
+    // `Stage(id = IMMERSIVE_STAGE_ID) { PicoTheme { ImmersiveHome() } }`, so this whole function
+    // body already runs inside a PicoTheme composition. Feeds controller-trigger charge/jump
+    // input below — a no-op when the player is bare-handed with no controller connected.
     val controllerHaptic = LocalHandControllerHaptic.current
     val hmd = remember { HMDTrackingProvider() }
     val anchor = remember { Entity() }
@@ -103,7 +102,7 @@ fun HomeStage() {
     // local `remember` rather than moving into HopSession alongside `paused`.
     var showExitConfirm by remember { mutableStateOf(false) }
 
-    // Root-caused against a PICO app store review report ("遇到崩溃"): DefaultStage has no
+    // Root-caused against a PICO app store review report ("遇到崩溃"): a Stage has no
     // window chrome or close button, and several distinct physical controller inputs all get
     // remapped by PICO OS into a plain KEYCODE_BACK KeyEvent (confirmed on real hardware) — left
     // un-intercepted, ComponentActivity's default handling calls Activity.finish() immediately
@@ -201,6 +200,9 @@ fun HomeStage() {
                 it.components[TransformComponent::class.java]?.setPosition(Vector3(SIDE_OFFSET_M, 0f, 0f))
                 anchor.addChild(it)
             }
+            // 从窗口切过来时会话是冻结的（ContainerSwitch.enterImmersive 设的），场景建好了才解冻。
+            // 冷启动时它本来就是 false，这行是幂等的。
+            HopSession.onContainerSwitchSettled()
         },
         attachments = {
             AttachmentPanel(PRIMARY_PANEL) {

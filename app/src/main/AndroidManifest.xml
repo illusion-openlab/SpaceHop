@@ -28,39 +28,53 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- DefaultStage Configuration -->
+            <!-- Volumetric DefaultWindowContainer 配置。应用启动落在这个窗口里；沉浸态的
+                 Stage 不在 manifest 声明，改由 Main.kt 的 DSL 按 id 声明并在玩家点「进入沉浸」
+                 时才打开。 -->
 
-            <!-- The unique name/id of the Stage -->
+            <!-- 窗口 id。必须与 content/ContainerSwitch.kt 的 MAIN_WINDOW_ID 一致，否则从
+                 沉浸态返回时 openWindowContainer 找不到它。 -->
             <meta-data
-                android:name="pico.spatial.stage.id"
-                android:value="YourStage" />
+                android:name="pico.spatial.windowcontainer.id"
+                android:value="SpaceHopVolume" />
 
-            <!-- Stage style at launch
-                 "0": StageStyle.Automatic, a system default setting, set to Mixed currently (default)
-                 "1": StageStyle.Mixed — displays both virtual content and the real environment at full intensity (100% each)
-                 "2": StageStyle.Progressive — allows adjusting the balance between virtual and real environments (0–100%)
-                    At 0: immersion = 0,full real environment, no virtual content
-                    At 100: immersion = 100,full virtual content, no real environment
-                 "3": StageStyle.Full — displays only virtual content (100%)
-             -->
+            <!-- "2": Form.Volumetric —— 体积窗口，允许自定义深度。沙盘需要深度，平面窗口装不下。 -->
             <meta-data
-                android:name="pico.spatial.stage.style"
+                android:name="pico.spatial.windowcontainer.style"
+                android:value="2" />
+
+            <!-- 桌面摆件尺度。玩法几何固定（最远跳 0.55m、平台半径 0.09m、横向 ±0.08m，
+                 合计约 0.73m 深 × 0.34m 宽），所以窗口里的场景必然是缩小的沙盘——
+                 见 content/WindowHome.kt 的 SANDBOX_SCALE。 -->
+            <meta-data
+                android:name="pico.spatial.windowcontainer.defaultsize"
+                android:value="0.5x0.4x0.45" />
+
+            <meta-data
+                android:name="pico.spatial.windowcontainer.defaultsize.unit"
+                android:value="meters" />
+
+            <!-- "2": WorldScale.Fixed —— 沙盘必须遵守真实透视，走近变大才对。
+                 Dynamic 的「距离再远看上去也一样大」会毁掉摆件感。 -->
+            <meta-data
+                android:name="pico.spatial.windowcontainer.worldscaletype"
+                android:value="2" />
+
+            <!-- "1": UniformResizable —— 玩法几何锁死纵横比，非等比拉伸会把沙盘拉变形。 -->
+            <meta-data
+                android:name="pico.spatial.windowcontainer.resizerestriction"
                 android:value="1" />
 
-            <!-- The immersion of a Progressive Stage at launch, only works when stage style is Progressive, range [0, 100], default value is 50 -->
+            <!-- "0": 底板可见 —— 它就是沙盘的桌面，青蛙站在上面。 -->
             <meta-data
-                android:name="pico.spatial.stage.immersion"
-                android:value="100" />
+                android:name="pico.spatial.windowcontainer.volumebasepanel"
+                android:value="0" />
 
-            <!-- The minimum immersion of a Progressive Stage that the user can adjust to, only works when stage style is Progressive, range [0, 100], default value is 0 -->
+            <!-- "0": 关闭毛玻璃 —— 沙盘要看穿到真实房间。主窗口的毛玻璃只能在 manifest 关，
+                 DSL 的 enableMaterialBackground 参数只作用于子窗口。 -->
             <meta-data
-                android:name="pico.spatial.stage.immersion_min"
-                android:value="100" />
-
-            <!-- The maximum immersion of a Progressive Stage that the user can adjust to, only works when stage style is Progressive, range [0, 100], default value is 100 -->
-            <meta-data
-                android:name="pico.spatial.stage.immersion_max"
-                android:value="100" />
+                android:name="pico.spatial.windowcontainer.materialbackground"
+                android:value="0" />
 
         </activity><!-- Turn on SpatialUI's own logger. Its default level is None, so it discards even its
              own errors, which makes gesture/tracking issues invisible in logcat. -->
