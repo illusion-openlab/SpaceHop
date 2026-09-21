@@ -253,7 +253,7 @@ fun interface HopClock { suspend fun awaitTick(): Long }   // 返回纳秒
 
 实体被裁剪到 **SpatialView 的** bounding box（不是 WindowContainer 的），因此根锚点需向后下方偏移，保证最远平台仍在盒内。
 
-**缩放只作用于视觉根实体，玩法几何的米数一律不变。** `DifficultyCurve`、`PlatformSpawner`、`LandingJudge`、`ScoreRules` 不改一行，现有 12 个测试文件全部继续有效。窗口被用户 uniform 缩放后重新测量（`onGloballyPositioned`）只重算缩放因子，判定米数纹丝不动。
+**缩放只作用于视觉根实体，玩法几何的米数一律不变。** `DifficultyCurve`、`PlatformSpawner`、`LandingJudge`、`ScoreRules` 不改一行，现有 13 个测试文件全部继续有效。窗口被用户 uniform 缩放后重新测量（`onGloballyPositioned`）只重算缩放因子，判定米数纹丝不动。
 
 ### 6.2 窗口内的 UI
 
@@ -279,7 +279,7 @@ fun interface HopClock { suspend fun awaitTick(): Long }   // 返回纳秒
 - 蓄力封顶一致：`cappedHeldMillis` 的计算在 `TrackingChargeInput` 与 `PointerChargeInput` 两个实现中给出相同结果（两者都经由同一 `ChargeCurve`，这条测的是两个实现各自的计时与封顶代码没有写歪，而不是 `ChargeCurve` 本身）。
 - 缩放不污染玩法：`PlatformSpawner` / `LandingJudge` 输出与窗口缩放因子无关。
 
-现有 12 个测试文件不需修改 —— 这是 §6.1"缩放只动视觉根实体"挣回来的。
+现有 13 个测试文件不需修改 —— 这是 §6.1"缩放只动视觉根实体"挣回来的。
 
 ### 7.2 模拟器验证（四个已知会骗人的地方）
 

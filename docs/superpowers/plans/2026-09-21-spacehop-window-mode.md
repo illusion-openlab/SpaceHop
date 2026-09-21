@@ -16,7 +16,7 @@
 
 - **不新增任何依赖。** `app/build.gradle.kts` 的 `dependencies {}` 块不得改动。已实测确认：`androidx.compose.runtime` 的 `mutableStateOf` 与 `kotlinx.coroutines.runBlocking` 在单测 JVM classpath 上可用，无需 `kotlinx-coroutines-test`。
 - **测试用 JUnit 4 + `runBlocking`**，不要用 `runTest` / `TestScope` / `advanceTimeBy`（依赖不存在）。
-- **不改动玩法规则文件**：`game/DifficultyCurve.kt`、`game/PlatformSpawner.kt`、`game/LandingJudge.kt`、`game/ScoreRules.kt`、`game/StageBoard.kt`、`game/ChargeCurve.kt`、`game/PinchStateMachine.kt`、`game/PinchGeometry.kt`、`game/ChargeIndicatorColor.kt`、`game/HighScoreStore.kt`、`game/RunState.kt`、`game/PlatformSpec.kt`。现有 12 个测试文件必须保持全绿且不被修改。
+- **不改动玩法规则文件**：`game/DifficultyCurve.kt`、`game/PlatformSpawner.kt`、`game/LandingJudge.kt`、`game/ScoreRules.kt`、`game/StageBoard.kt`、`game/ChargeCurve.kt`、`game/PinchStateMachine.kt`、`game/PinchGeometry.kt`、`game/ChargeIndicatorColor.kt`、`game/HighScoreStore.kt`、`game/RunState.kt`、`game/PlatformSpec.kt`。现有 13 个测试文件（含模板 `ExampleUnitTest`）必须保持全绿且不被修改。
 - **UI 一律 SpatialUI + `PicoTheme`**（`com.pico.spatial.ui.design.*`）。禁止 `androidx.compose.material` / `material3` / `MaterialTheme`。
 - **构建与测试命令**（每次都要先 export，环境变量不跨 Bash 调用持续）：
   ```bash
@@ -212,7 +212,7 @@ ls app/build/test-results/testDebugUnitTest/*.xml | wc -l
 grep -L 'failures="0" errors="0"' app/build/test-results/testDebugUnitTest/*.xml
 ```
 
-预期：BUILD SUCCESSFUL；xml 文件数 13（原有 12 + `HopClockTest`）；`grep -L` 无输出（即没有任何一个文件缺少 `failures="0" errors="0"`）。
+预期：BUILD SUCCESSFUL；xml 文件数 14（原有 13 + `HopClockTest`）；`grep -L` 无输出（即没有任何一个文件缺少 `failures="0" errors="0"`）。
 
 - [ ] **Step 9: 提交**
 
@@ -1251,7 +1251,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 **Files:**
 - Create: `app/src/main/java/tech/illusion/spacehop/content/HopRun.kt`
 - Modify: `app/src/main/java/tech/illusion/spacehop/content/HomeStage.kt`（改为消费 `rememberHopRun`）
-- Test: 无新增单测（本任务是纯搬运重构，行为不变；由现有 12 个测试文件 + 全量编译把关）
+- Test: 无新增单测（本任务是纯搬运重构，行为不变；由现有 13 个测试文件 + 全量编译把关）
 
 **Interfaces:**
 - Consumes: `HopSession`、`HopPhase`、`freshBoardState`（Task 2）；`ChargeInput`、`ChargeHand`（Task 3）；`HopClock`（Task 1）
@@ -2263,8 +2263,8 @@ grep -L 'failures="0" errors="0"' app/build/test-results/testDebugUnitTest/*.xml
 ls app/build/test-results/testDebugUnitTest/*.xml | wc -l
 ```
 
-预期：BUILD SUCCESSFUL；`grep -L` 无输出；xml 文件数 **19**
-（原有 12 个 + 本次新增 7 个：`HopClockTest`、`HopSessionTest`、`ChargeHandTest`、
+预期：BUILD SUCCESSFUL；`grep -L` 无输出；xml 文件数 **20**
+（原有 13 个 + 本次新增 7 个：`HopClockTest`、`HopSessionTest`、`ChargeHandTest`、
 `PointerChargeInputTest`、`ContainerSwitchTest`、`WindowScaleTest`、`JumpGraceTest`）。
 
 数量对不上说明有测试类没被执行——去查，不要忽略。`./gradlew -q` 成功时是零输出，零输出不等于
