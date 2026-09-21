@@ -48,8 +48,9 @@ class ContainerSwitchTest {
     @Test
     fun blockedOpenStageRollsBackTheSession() = runBlocking {
         val runBefore = HopSession.runState
-        enterImmersive(openStage = { false }, closeWindow = { })
+        val outcome = enterImmersive(openStage = { false }, closeWindow = { })
 
+        assertEquals(SwitchOutcome.BLOCKED_BY_SYSTEM, outcome)
         assertFalse("被拒后必须解冻，否则玩家卡在暂停里", HopSession.paused)
         assertFalse(HopSession.switching)
         assertEquals(runBefore, HopSession.runState)
