@@ -161,7 +161,7 @@ fun HomeStage() {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
     val spawner = remember { PlatformSpawner(Random.Default) }
-    val boardAnimator = remember { StageBoardAnimator() }
+    val boardAnimator = remember { StageBoardAnimator(HopClocks.frameAligned) }
     val highScoreStore = remember { HighScoreStore(context) }
     var heightAdjustM by remember { mutableFloatStateOf(0f) }
     var runState by remember { mutableStateOf(RunState()) }
@@ -482,7 +482,7 @@ fun HomeStage() {
             boardAnimator.build(anchor)
             boardAnimator.placeInstant(boardState)
 
-            characterController = CharacterController.load(anchor, characterRadiusMeters = 0.05f).also {
+            characterController = CharacterController.load(anchor, characterRadiusMeters = 0.05f, clock = HopClocks.frameAligned).also {
                 it.setIdlePosition(Vector3(0f, CHARACTER_GROUND_Y, 0f))
                 it.faceTarget(
                     boardState.platforms[1].lateralOffsetMeters,

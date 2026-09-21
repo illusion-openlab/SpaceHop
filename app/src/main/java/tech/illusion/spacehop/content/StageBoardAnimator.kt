@@ -1,7 +1,6 @@
 package tech.illusion.spacehop.content
 
 import android.util.Log
-import androidx.compose.runtime.withFrameNanos
 import com.pico.spatial.core.ecs.Entity
 import com.pico.spatial.core.ecs.LoadType
 import com.pico.spatial.core.ecs.ObjectAudioComponent
@@ -123,7 +122,7 @@ private data class NormalizedTarget(val entity: Entity, val normalizeScale: Floa
  * back off the entities — this SDK's `TransformComponent` only has verified setters
  * (`setPosition`/`setScaleVector`/...), no confirmed getters.
  */
-class StageBoardAnimator {
+class StageBoardAnimator(private val clock: HopClock) {
 
     private lateinit var currentVisual: PlatformVisual
     private lateinit var nextVisual: PlatformVisual
@@ -374,9 +373,9 @@ class StageBoardAnimator {
             position = Vector3(staleTo.position.x, staleTo.position.y, staleTo.position.z - NEXT_APPROACH_EXTRA_DISTANCE_M),
         )
 
-        val slideStartNanos = withFrameNanos { it }
+        val slideStartNanos = clock.awaitTick()
         while (true) {
-            val t = (((withFrameNanos { it }) - slideStartNanos) / 1_000_000f / ADVANCE_PHASE_MS)
+            val t = ((clock.awaitTick() - slideStartNanos) / 1_000_000f / ADVANCE_PHASE_MS)
                 .coerceIn(0f, 1f)
             applyTransform(promotedVisual.wrapper, lerpTransform(promotedFrom, promotedTo, t))
             staleVisual.opacity.opacity = 1f - t // fully transparent exactly when the slide finishes
@@ -388,9 +387,9 @@ class StageBoardAnimator {
         // it starts sliding/fading back in as the freshly-spawned "next" platform.
         applyKind(staleVisual, newState.platforms[1].kind)
         applyTransform(staleVisual.wrapper, staleFrom) // instant — it is fully transparent right now
-        val approachStartNanos = withFrameNanos { it }
+        val approachStartNanos = clock.awaitTick()
         while (true) {
-            val t = (((withFrameNanos { it }) - approachStartNanos) / 1_000_000f / ADVANCE_PHASE_MS)
+            val t = ((clock.awaitTick() - approachStartNanos) / 1_000_000f / ADVANCE_PHASE_MS)
                 .coerceIn(0f, 1f)
             applyTransform(staleVisual.wrapper, lerpTransform(staleFrom, staleTo, t))
             staleVisual.opacity.opacity = t

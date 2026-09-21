@@ -1,7 +1,6 @@
 package tech.illusion.spacehop.content
 
 import android.util.Log
-import androidx.compose.runtime.withFrameNanos
 import com.pico.spatial.core.ecs.Entity
 import com.pico.spatial.core.ecs.LoadType
 import com.pico.spatial.core.ecs.ObjectAudioComponent
@@ -60,6 +59,7 @@ class CharacterController private constructor(
     private val entity: Entity,
     private val modelEntity: Entity,
     private val jumpAudioController: AudioPlayerController,
+    private val clock: HopClock,
 ) {
 
     private var basePosition = Vector3.ZERO
@@ -74,7 +74,7 @@ class CharacterController private constructor(
         /** Loads the frog model as a child of a new wrapper entity under [anchor], scaling it so
          * its bounding-sphere radius matches [characterRadiusMeters] (the old sphere character's
          * radius), then returns a ready [CharacterController]. */
-        suspend fun load(anchor: Entity, characterRadiusMeters: Float): CharacterController {
+        suspend fun load(anchor: Entity, characterRadiusMeters: Float, clock: HopClock): CharacterController {
             val entity = Entity()
             anchor.addChild(entity)
             val model = withContext(Dispatchers.IO) { Entity.load(FROG_ASSET_PATH) }
@@ -145,7 +145,7 @@ class CharacterController private constructor(
             }
             val jumpAudioController = entity.prepareAudio(jumpAudioResource)
 
-            return CharacterController(entity, model, jumpAudioController)
+            return CharacterController(entity, model, jumpAudioController, clock)
         }
     }
 
@@ -259,10 +259,10 @@ class CharacterController private constructor(
         } else {
             0f
         }
-        val startNanos = withFrameNanos { it }
+        val startNanos = clock.awaitTick()
         var endPosition = basePosition
         while (true) {
-            val nowNanos = withFrameNanos { it }
+            val nowNanos = clock.awaitTick()
             val elapsedMs = (nowNanos - startNanos) / 1_000_000f
             val t = (elapsedMs / FLIGHT_DURATION_MS).coerceIn(0f, 1f)
             val forwardOffset = -launchDistanceMeters * t
@@ -286,11 +286,11 @@ class CharacterController private constructor(
      * feedback that reads as losing balance rather than just sinking in place. Callers pair this
      * with `StageBoardAnimator.playFallSound()` for the audio cue. */
     suspend fun fall(tippedForward: Boolean) {
-        val startNanos = withFrameNanos { it }
+        val startNanos = clock.awaitTick()
         val start = basePosition
         val tipSign = if (tippedForward) 1f else -1f
         while (true) {
-            val nowNanos = withFrameNanos { it }
+            val nowNanos = clock.awaitTick()
             val elapsedMs = (nowNanos - startNanos) / 1_000_000f
             val t = (elapsedMs / FALL_DURATION_MS).coerceIn(0f, 1f)
             entity.components[TransformComponent::class.java]?.apply {
@@ -322,9 +322,9 @@ class CharacterController private constructor(
         baseYawDegrees = aimYawDegrees(nextLateralOffsetMeters, nextForwardDistanceMeters)
         entity.components[TransformComponent::class.java]
             ?.setEulerAngles(EulerAngles(pitch = 0f, yaw = baseYawDegrees, roll = 0f))
-        val startNanos = withFrameNanos { it }
+        val startNanos = clock.awaitTick()
         while (true) {
-            val nowNanos = withFrameNanos { it }
+            val nowNanos = clock.awaitTick()
             val elapsedMs = (nowNanos - startNanos) / 1_000_000f
             val t = (elapsedMs / durationMs).coerceIn(0f, 1f)
             val position = Vector3(
