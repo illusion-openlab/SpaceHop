@@ -45,7 +45,7 @@
 
             <!-- 桌面摆件尺度。玩法几何固定（最远跳 0.55m、平台半径 0.09m、横向 ±0.08m，
                  合计约 0.73m 深 × 0.34m 宽），所以窗口里的场景必然是缩小的沙盘——
-                 见 content/WindowHome.kt 的 SANDBOX_SCALE。 -->
+                 见 content/WindowScale.kt。 -->
             <meta-data
                 android:name="pico.spatial.windowcontainer.defaultsize"
                 android:value="0.5x0.4x0.45" />

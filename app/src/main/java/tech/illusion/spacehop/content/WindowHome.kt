@@ -105,17 +105,17 @@ fun WindowHome() {
     // 走兜底值）的 scale，而它实际跑完的时机晚于 effect——两处写同一属性时，后跑的那个会把
     // 测量后的正确值覆盖回兜底值。所以这里一次写全，`initial` 不碰 transform。
     //
-    // 位置用的是**缩放后**的米数：实体自身的 position 在父空间里，不受自己的 scale 影响。
-    // 青蛙站在场景原点、平台朝 -Z 展开，所以原点要贴到盒子的前（+Z）面，场景才整个落在盒内；
-    // 同理 y 往下压半个场景高度，让跳跃弧留出上方余量。
-    LaunchedEffect(scale, sceneBuilt) {
+    // 摆位的两个偏移都算在 [WindowScale] 里、各自带单测：它们是这个壳里唯一能被单测钉住的
+    // 几何，写在这里只会变成一行没人验证的表达式。`SpatialView` 的内容原点是视图的中心
+    // （SDK `SpatialCoordinateSpaceConverter.kt:59,79`），两个偏移都以盒心为 0。
+    LaunchedEffect(scale, halfH, sceneBuilt) {
         sceneRoot.components[TransformComponent::class.java]?.apply {
             setScaleVector(Vector3(scale, scale, scale))
             setPosition(
                 Vector3(
                     0f,
-                    -(WindowScale.SCENE_HEIGHT_M * scale) / 2f,
-                    (WindowScale.SCENE_DEPTH_M * scale) / 2f,
+                    WindowScale.originOffsetY(halfH, scale),
+                    WindowScale.originOffsetZ(scale),
                 ),
             )
         }
@@ -142,17 +142,33 @@ fun WindowHome() {
                     halfD = dpToLength(size3D.depth.toDp(), LengthUnit.Meters) / 2f
                 }
                 // Task 10 的真机取证锚点：沙盘摆位对不对只能靠实测三围反推，截图给不出可信数值。
+                // 判据：originZ + MAX_FOOTPRINT_RADIUS_M*scale <= halfD（当前平台不捅出前表面），
+                // 且 originY + SCENE_HEIGHT_M*scale <= halfH（跳跃弧不顶出天花板）。
+                val measuredScale = WindowScale.fitScale(halfW, halfH, halfD)
                 Log.e(
                     TAG,
                     "view box measured: halfW=$halfW halfH=$halfH halfD=$halfD " +
-                        "scale=${WindowScale.fitScale(halfW, halfH, halfD)}",
+                        "scale=$measuredScale " +
+                        "originY=${WindowScale.originOffsetY(halfH, measuredScale)} " +
+                        "originZ=${WindowScale.originOffsetZ(measuredScale)}",
                 )
             }
             // 蓄力手势只在真正能跳的时候挂载。工具条上的按钮位于 SpatialView 之外，物理上
             // 不重叠——已知教训：拖拽检测器条件性消费事件、点击检测器一见消费就取消，两个
             // 手势节点重叠时带位移的点击会间歇性失效。
             .pointerInput(chargeEnabled) {
-                if (!chargeEnabled) return@pointerInput
+                if (!chargeEnabled) {
+                    // 按住的手没松就被卸载了（典型路径：回合超时看门狗替玩家强制起跳 → 判失手
+                    // → isAlive 变 false → chargeEnabled 变 false），上一个 pointerInput 协程
+                    // 被取消，`tryAwaitRelease()` 在取消时**不会返回**，下面那句 onPressUp()
+                    // 永远不跑。`PointerChargeInput.pressStartNanos` 就这么留着，而
+                    // rememberHopRun 的 16ms 循环无条件调 tickChargeFraction()，蓄力会一路涨进
+                    // 结算页和下一局开局——满格蓄力条 + 蹲着的青蛙，玩家还没碰过屏幕。
+                    // 在这里补一次松手来收尾。安全：它只清 pressStartNanos / chargeState，而
+                    // rememberHopRun 的 onRelease 本身就按 phase/isAlive/paused 挡着，放不出跳。
+                    chargeInput.onPressUp()
+                    return@pointerInput
+                }
                 detectTapGestures(
                     context = context,
                     targetedToEntity = null, // 2D 与 3D 事件都收：按住窗口里任何地方都能蓄力
