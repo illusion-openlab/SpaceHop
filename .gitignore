@@ -32,3 +32,10 @@ google-services.json
 
 # Android Profiling
 *.hprof
+
+# Device logs. Logcat dumps never enter the repo -- they are large, noisy, and
+# routinely carry device identifiers. Capture them to the scratchpad instead.
+*.logcat
+logcat*.txt
+*-logcat.txt
+.spatialsdk/logs/
