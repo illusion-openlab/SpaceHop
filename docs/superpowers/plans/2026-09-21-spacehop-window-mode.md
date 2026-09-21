@@ -1862,9 +1862,15 @@ fun WindowHome() {
     val scope = rememberCoroutineScope()
 
     val chargeInput = remember { PointerChargeInput() }
+    // MUST be remembered, not called inline. `rememberHopRun` does `remember(clock) { HopRun(...) }`,
+    // so a clock whose identity changes every recomposition rebuilds HopRun -- and with it a second
+    // Sfx -- while the first one's `release()` sits in a DisposableEffect(Unit) that never re-runs.
+    // That leaks a SoundPool per recomposition. `HopClocks.frameAligned` is a stable singleton and
+    // has no such problem; `delayDriven()` returns a fresh instance on every call.
+    val clock = remember { HopClocks.delayDriven() }
     val run = rememberHopRun(
         chargeInput = chargeInput,
-        clock = HopClocks.delayDriven(),
+        clock = clock,
         // 窗口态没有可以精准震动的目标：pointer 事件给不出左右手。
         onHaptic = { _, _ -> },
     )
