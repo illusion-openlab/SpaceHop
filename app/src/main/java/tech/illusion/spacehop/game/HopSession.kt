@@ -89,7 +89,12 @@ object HopSession {
         switching = false
     }
 
-    /** 切换失败（`openStage` 返回 NotAllowed/Error）时回滚到切换前的状态。 */
+    /** 切换失败（`openStage` 返回 NotAllowed/Error）时解冻、清掉切换标志。
+     *
+     * 这就是完整的回滚：切换开始到失败之间，[onContainerSwitchStart] 只动了 [paused]、
+     * [switching] 和 [recentLandingTimestampsMs]，容器本身还没换（失败发生在 openStage
+     * 之后、closeWindow 之前），所以没有别的状态需要还原。清空的 fast-streak 时间戳不必
+     * 恢复——切换期间玩家本来就没在连跳，判定不受影响。 */
     fun onContainerSwitchFailed() {
         paused = false
         switching = false
