@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -170,6 +171,44 @@ fun WindowHome() {
         attachments = {},
     )
 
+    // 「进入沉浸」单独一个弹层，锚在窗口顶部——用户实测反馈：和蓄力条/HUD 挤在底部工具条同一排时
+    // 位置太靠近主体画面、容易在按蓄力条时误触到它。挪到顶部之后两者物理上分得足够开，且不挡
+    // 视线（沙盘的可视重心在窗口中下部，顶部本来就是留白）。
+    Augment(
+        anchor = NormalizedPoint3D.TopFront,
+        alignment = AugmentContentAlignment.TopCenter,
+        enableMaterialBackground = false,
+    ) {
+        PicoTheme {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.padding(12.dp),
+            ) {
+                Button(
+                    onClick = {
+                        scope.launch {
+                            val outcome = enterImmersive(
+                                openStage = { openImmersiveStage(navigator) },
+                                closeWindow = { navigator.closeWindowContainer(MAIN_WINDOW_ID) },
+                            )
+                            blockedMessage = when (outcome) {
+                                SwitchOutcome.BLOCKED_BY_SYSTEM -> "另一个应用正占用沉浸空间，稍后再试"
+                                else -> null
+                            }
+                        }
+                    },
+                    // 飞行中置灰：飞行动画状态住在 CharacterController 里而不在 HopSession 里，
+                    // 带不过去。与其序列化它，不如这半秒不让点。
+                    enabled = HopSession.canSwitchContainer(),
+                ) { Text(text = "进入沉浸") }
+                blockedMessage?.let {
+                    Text(text = it, color = PicoTheme.colorScheme.labelSecondary)
+                }
+            }
+        }
+    }
+
     Augment(
         anchor = NormalizedPoint3D.BottomFront,
         alignment = AugmentContentAlignment.BottomCenter,
@@ -198,42 +237,59 @@ fun WindowHome() {
                         diedInLotusPond = phase.diedInLotusPond,
                         onRetry = { run.startNewRun() },
                     )
-                    is HopPhase.Playing -> Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        HudContent(
-                            score = HopSession.runState.score,
-                            comboStreak = HopSession.runState.comboStreak,
-                        )
-                        ChargeBar(chargeInput = chargeInput, enabled = chargeEnabled)
-                    }
-                }
-                // 工具条常驻，不挂在某个 phase 下：起始页和结算页也要能进沉浸，否则玩家必须先
-                // 开一局才能换容器。
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Button(
-                        onClick = {
-                            scope.launch {
-                                val outcome = enterImmersive(
-                                    openStage = { openImmersiveStage(navigator) },
-                                    closeWindow = { navigator.closeWindowContainer(MAIN_WINDOW_ID) },
-                                )
-                                blockedMessage = when (outcome) {
-                                    SwitchOutcome.BLOCKED_BY_SYSTEM -> "另一个应用正占用沉浸空间，稍后再试"
-                                    else -> null
+                    is HopPhase.Playing -> {
+                        // 蓄力手势挂在整块面板上，不只是那条细条——用户反馈「只有那一小块能按」
+                        // 手感太窄。这块面板在 Playing 阶段没有任何按钮（HudContent 纯展示、
+                        // ChargeBar 现在也是纯展示），挂在整个 Row 上不会和任何子控件的点击抢事件。
+                        val interactionSource = remember { MutableInteractionSource() }
+                        LaunchedEffect(interactionSource) {
+                            interactionSource.interactions.collect { interaction ->
+                                when (interaction) {
+                                    is PressInteraction.Press -> chargeInput.onPressDown()
+                                    is PressInteraction.Release, is PressInteraction.Cancel ->
+                                        chargeInput.onPressUp()
+                                    else -> {}
                                 }
                             }
-                        },
-                        // 飞行中置灰：飞行动画状态住在 CharacterController 里而不在 HopSession 里，
-                        // 带不过去。与其序列化它，不如这半秒不让点。
-                        enabled = HopSession.canSwitchContainer(),
-                    ) { Text(text = "进入沉浸") }
-                    blockedMessage?.let {
-                        Text(text = it, color = PicoTheme.colorScheme.labelSecondary)
+                        }
+                        // 回合结束/切换容器时如果玩家的手还按着，Compose 是否会在 `clickable` 的
+                        // `enabled` 翻转时自动吐出 `PressInteraction.Cancel` 未经过这个项目独立
+                        // 验证，所以额外镜像一份显式兜底松手——和 Task 8 修过的「手势卸载时蓄力
+                        // 泄漏」同一个道理：宁可判两次，不可漏判一次。
+                        LaunchedEffect(chargeEnabled) {
+                            if (!chargeEnabled) chargeInput.onPressUp()
+                        }
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            // 分数面板和蓄力条之间的间距故意拉大：用户反馈分数离主体画面太近，
+                            // 拉开间距能让分数（整组居中）自然往左挪、蓄力区往右挪，不用假设
+                            // 窗口的具体像素宽度去做绝对定位。
+                            horizontalArrangement = Arrangement.spacedBy(40.dp),
+                            modifier = Modifier
+                                .clickable(
+                                    interactionSource = interactionSource,
+                                    indication = null,
+                                    enabled = chargeEnabled,
+                                    onClick = {}, // 真正的逻辑在上面的 interactionSource 收流里
+                                )
+                                .padding(vertical = 8.dp),
+                        ) {
+                            HudContent(
+                                score = HopSession.runState.score,
+                                comboStreak = HopSession.runState.comboStreak,
+                            )
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    text = "按住蓄力",
+                                    style = PicoTheme.typography.labelLarge,
+                                    color = PicoTheme.colorScheme.labelSecondary,
+                                )
+                                // 蓄力条本身再往下挪一点，和上面的文字标签拉开——用户反馈的第三条。
+                                Spacer(modifier = Modifier.height(10.dp))
+                                ChargeBar(chargeInput = chargeInput)
+                            }
+                        }
                     }
                 }
             }
@@ -269,76 +325,47 @@ private suspend fun openImmersiveStage(
 }
 
 /**
- * 窗口态的蓄力交互 + 反馈：一个可按住的条形区域，按住蓄力、松手起跳。
+ * 窗口态的蓄力视觉反馈——纯展示，不处理手势。
  *
- * 这块的位置是被真机实测逼出来的，不是最初设计：`Modifier.pointerInput` 挂在 `SpatialView`
- * 自己的 modifier 上——不管是 PICO 的 `detectTapGestures`/`detectSpatialTapGesture` 还是尝试直接
- * 引用的 vanilla AndroidX 版本——协程连启动都不会启动，甚至换成一个完全独立、不经过 `AndroidView`
- * 包装的裸 Compose `Box` 也一样。运行时自己的空间手势识别在更底层把触摸事件送去做 3D 实体命中
- * 测试，Compose 自己的指针事件管线在体积主窗口的根组合上根本收不到事件。唯一确认收得到事件的是
- * `Augment` 弹层（它是独立的 Android 窗口）里的标准 Compose 手势——`Button` 内部用的正是
- * `androidx.compose.foundation.clickable`，这里复用同一套机制，用 `MutableInteractionSource`
- * 收 `PressInteraction.Press`/`Release`/`Cancel` 来拿到按住时长，而不是走一次性的 `onClick`。
+ * 蓄力手势本身挂在调用侧（[WindowHome] 的 Playing 分支）包住整个 HUD+蓄力区的 `Row` 上，
+ * 而不是只挂在这条窄窄的进度条上：用户实测反馈「只有那一小块区域能按」手感太窄，希望整块面板
+ * 任意位置都能发起蓄力。这里不再持有 `MutableInteractionSource`。
+ *
+ * 手势之所以只能挂在 `Augment` 弹层这类独立 2D 面板里、挂不到 3D 场景上，是被真机实测逼出来
+ * 的：`Modifier.pointerInput`（不管是 PICO 的 `detectTapGestures`/`detectSpatialTapGesture`
+ * 还是 vanilla AndroidX 版本）挂在体积主窗口的根组合上——不管是 `SpatialView` 自己的 modifier
+ * 还是一个完全独立、不经过 `AndroidView` 包装的裸 Compose `Box`——协程连启动都不会启动。运行时
+ * 自己的空间手势识别在更底层把触摸事件送去做 3D 实体命中测试，Compose 自己的指针事件管线在这层
+ * 根本收不到事件；唯一确认收得到事件的是 `Augment` 弹层（独立的 Android 窗口）里的标准 Compose
+ * 手势——`Button` 内部用的正是 `androidx.compose.foundation.clickable`，调用侧复用的就是这套。
  *
  * 沉浸态用四颗指尖球做蓄力反馈，窗口态没有手部数据，只能靠这条 + 青蛙自身的下蹲压缩。
  * 颜色沿用 [tech.illusion.spacehop.game.ChargeIndicatorColor] 的绿→红插值，和指尖球同一套语义。
  *
  * 收流在这个 composable 内部而不是调用侧：蓄力进度每 16ms 更新一次，在外面 collect 会把整个
  * Augment 的内容（起始页/结算页/工具条）一起拖进 60Hz 重组。
- *
- * @param enabled 是否允许开始一次新的蓄力（Playing && isAlive && !paused）。回合结束/切换容器
- *   时如果玩家的手还按着，Compose 是否会在 `clickable` 的 `enabled` 翻转时自动吐出
- *   `PressInteraction.Cancel` 未经过这个项目独立验证，所以这里额外镜像了一份显式的兜底松手——
- *   和 Task 8 修过的那次「手势卸载时蓄力泄漏」同一个道理：宁可判两次，不可漏判一次。
  */
 @Composable
-private fun ChargeBar(chargeInput: PointerChargeInput, enabled: Boolean) {
+private fun ChargeBar(chargeInput: PointerChargeInput) {
     val state by chargeInput.chargeState.collectAsState()
     val rgb = ChargeIndicatorColor.forFraction(state.chargeFraction)
-    val interactionSource = remember { MutableInteractionSource() }
 
-    LaunchedEffect(interactionSource) {
-        interactionSource.interactions.collect { interaction ->
-            when (interaction) {
-                is PressInteraction.Press -> chargeInput.onPressDown()
-                is PressInteraction.Release, is PressInteraction.Cancel -> chargeInput.onPressUp()
-                else -> {}
-            }
-        }
-    }
-    LaunchedEffect(enabled) {
-        if (!enabled) chargeInput.onPressUp()
-    }
-
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            text = "按住蓄力",
-            style = PicoTheme.typography.labelLarge,
-            color = PicoTheme.colorScheme.labelSecondary,
-        )
-        Box(
-            modifier = Modifier
-                .width(160.dp)
-                .height(36.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(PicoTheme.colorScheme.fillTertiary)
-                .clickable(
-                    interactionSource = interactionSource,
-                    indication = null,
-                    enabled = enabled,
-                    onClick = {}, // 真正的逻辑在上面的 interactionSource 收流里，这里只需要注册手势
-                ),
-        ) {
-            // 0f 宽度的 fillMaxWidth 没必要也没意义，索性整条不画——顺带避开 fraction 为 0 时
-            // 各版本 Compose 对 fillMaxWidth 取值范围的不同处理。
-            if (state.isCharging && state.chargeFraction > 0f) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .fillMaxWidth(state.chargeFraction.coerceIn(0.01f, 1f))
-                        .background(Color(rgb[0], rgb[1], rgb[2], 1f)),
-                )
-            }
+    Box(
+        modifier = Modifier
+            .width(160.dp)
+            .height(20.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(PicoTheme.colorScheme.fillTertiary),
+    ) {
+        // 0f 宽度的 fillMaxWidth 没必要也没意义，索性整条不画——顺带避开 fraction 为 0 时
+        // 各版本 Compose 对 fillMaxWidth 取值范围的不同处理。
+        if (state.isCharging && state.chargeFraction > 0f) {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(state.chargeFraction.coerceIn(0.01f, 1f))
+                    .background(Color(rgb[0], rgb[1], rgb[2], 1f)),
+            )
         }
     }
 }
