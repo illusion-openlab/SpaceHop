@@ -2,6 +2,9 @@ package tech.illusion.spacehop.content
 
 import android.util.Log
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,9 +29,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.pico.spatial.core.ecs.Entity
 import com.pico.spatial.core.ecs.TransformComponent
@@ -37,7 +38,6 @@ import com.pico.spatial.ui.design.Button
 import com.pico.spatial.ui.design.PicoTheme
 import com.pico.spatial.ui.design.Text
 import com.pico.spatial.ui.foundation.content.SpatialView
-import com.pico.spatial.ui.foundation.gesture.detectTapGestures
 import com.pico.spatial.ui.foundation.geometry.NormalizedPoint3D
 import com.pico.spatial.ui.foundation.layout.depth
 import com.pico.spatial.ui.foundation.layout.sizeIn3D
@@ -69,7 +69,6 @@ private const val TAG = "SpaceHopWindow"
  */
 @Composable
 fun WindowHome() {
-    val context = LocalContext.current
     // PhysicalLengthConverter 自己就是 Density（platform/PhysicalLengthConverter.kt:187
     // `interface PhysicalLengthConverter : Density`），所以下面 `with(converter)` 里可以直接
     // 用 `toDp()`，不必再取一份 LocalDensity。
@@ -145,33 +144,15 @@ fun WindowHome() {
                 // 三围反推，截图给不出可信数值。判据：originZ + MAX_FOOTPRINT_RADIUS_M*scale <=
                 // halfD（当前平台不捅出前表面），且 originY + SCENE_HEIGHT_M*scale <= halfH（跳跃弧
                 // 不顶出天花板）。取证已完成，M1 修复：移除每帧都在 ERROR 级别触发的调试 Log.e。
-            }
-            // 蓄力手势只在真正能跳的时候挂载。工具条上的按钮位于 SpatialView 之外，物理上
-            // 不重叠——已知教训：拖拽检测器条件性消费事件、点击检测器一见消费就取消，两个
-            // 手势节点重叠时带位移的点击会间歇性失效。
-            .pointerInput(chargeEnabled) {
-                if (!chargeEnabled) {
-                    // 按住的手没松就被卸载了（典型路径：回合超时看门狗替玩家强制起跳 → 判失手
-                    // → isAlive 变 false → chargeEnabled 变 false），上一个 pointerInput 协程
-                    // 被取消，`tryAwaitRelease()` 在取消时**不会返回**，下面那句 onPressUp()
-                    // 永远不跑。`PointerChargeInput.pressStartNanos` 就这么留着，而
-                    // rememberHopRun 的 16ms 循环无条件调 tickChargeFraction()，蓄力会一路涨进
-                    // 结算页和下一局开局——满格蓄力条 + 蹲着的青蛙，玩家还没碰过屏幕。
-                    // 在这里补一次松手来收尾。安全：它只清 pressStartNanos / chargeState，而
-                    // rememberHopRun 的 onRelease 本身就按 phase/isAlive/paused 挡着，放不出跳。
-                    chargeInput.onPressUp()
-                    return@pointerInput
-                }
-                detectTapGestures(
-                    context = context,
-                    targetedToEntity = null, // 2D 与 3D 事件都收：按住窗口里任何地方都能蓄力
-                    onPress = {
-                        chargeInput.onPressDown()
-                        tryAwaitRelease()
-                        chargeInput.onPressUp()
-                    },
-                )
             },
+        // 蓄力手势**不再**挂在这里。实测确认：`Modifier.pointerInput`（不论是 PICO 的
+        // `detectTapGestures`/`detectSpatialTapGesture` 还是尝试直接引用的 vanilla AndroidX 版本）
+        // 在这个体积主窗口的根组合上——不管是挂在 SpatialView 自己的 modifier 上，还是挂在一个
+        // 完全独立、不经过 AndroidView 的裸 Compose Box 上——协程连启动都不会启动，poll 不到任何
+        // 触摸事件。运行时自己的空间手势识别在更底层把事件送去做 3D 实体命中测试，Compose 自己的
+        // 指针事件管线在这层根本收不到。唯一确认能用的是 `Augment` 弹层（独立的 Android 窗口）里
+        // 的标准 Compose 手势——`Button` 用的 `clickable` 正是这条路径，所以蓄力交互挪到了
+        // [ChargeBar] 内部，用同一套 `clickable` + `MutableInteractionSource` 机制。
         initial = { content, _ ->
             content.addEntity(sceneRoot)
             try {
@@ -225,7 +206,7 @@ fun WindowHome() {
                             score = HopSession.runState.score,
                             comboStreak = HopSession.runState.comboStreak,
                         )
-                        ChargeBar(chargeInput = chargeInput)
+                        ChargeBar(chargeInput = chargeInput, enabled = chargeEnabled)
                     }
                 }
                 // 工具条常驻，不挂在某个 phase 下：起始页和结算页也要能进沉浸，否则玩家必须先
@@ -287,32 +268,77 @@ private suspend fun openImmersiveStage(
     }
 }
 
-/** 窗口态的蓄力反馈。沉浸态用四颗指尖球，窗口态没有手部数据，只能靠这条 + 青蛙自身的下蹲压缩。
+/**
+ * 窗口态的蓄力交互 + 反馈：一个可按住的条形区域，按住蓄力、松手起跳。
  *
+ * 这块的位置是被真机实测逼出来的，不是最初设计：`Modifier.pointerInput` 挂在 `SpatialView`
+ * 自己的 modifier 上——不管是 PICO 的 `detectTapGestures`/`detectSpatialTapGesture` 还是尝试直接
+ * 引用的 vanilla AndroidX 版本——协程连启动都不会启动，甚至换成一个完全独立、不经过 `AndroidView`
+ * 包装的裸 Compose `Box` 也一样。运行时自己的空间手势识别在更底层把触摸事件送去做 3D 实体命中
+ * 测试，Compose 自己的指针事件管线在体积主窗口的根组合上根本收不到事件。唯一确认收得到事件的是
+ * `Augment` 弹层（它是独立的 Android 窗口）里的标准 Compose 手势——`Button` 内部用的正是
+ * `androidx.compose.foundation.clickable`，这里复用同一套机制，用 `MutableInteractionSource`
+ * 收 `PressInteraction.Press`/`Release`/`Cancel` 来拿到按住时长，而不是走一次性的 `onClick`。
+ *
+ * 沉浸态用四颗指尖球做蓄力反馈，窗口态没有手部数据，只能靠这条 + 青蛙自身的下蹲压缩。
  * 颜色沿用 [tech.illusion.spacehop.game.ChargeIndicatorColor] 的绿→红插值，和指尖球同一套语义。
  *
  * 收流在这个 composable 内部而不是调用侧：蓄力进度每 16ms 更新一次，在外面 collect 会把整个
- * Augment 的内容（起始页/结算页/工具条）一起拖进 60Hz 重组。 */
+ * Augment 的内容（起始页/结算页/工具条）一起拖进 60Hz 重组。
+ *
+ * @param enabled 是否允许开始一次新的蓄力（Playing && isAlive && !paused）。回合结束/切换容器
+ *   时如果玩家的手还按着，Compose 是否会在 `clickable` 的 `enabled` 翻转时自动吐出
+ *   `PressInteraction.Cancel` 未经过这个项目独立验证，所以这里额外镜像了一份显式的兜底松手——
+ *   和 Task 8 修过的那次「手势卸载时蓄力泄漏」同一个道理：宁可判两次，不可漏判一次。
+ */
 @Composable
-private fun ChargeBar(chargeInput: PointerChargeInput) {
+private fun ChargeBar(chargeInput: PointerChargeInput, enabled: Boolean) {
     val state by chargeInput.chargeState.collectAsState()
     val rgb = ChargeIndicatorColor.forFraction(state.chargeFraction)
-    Box(
-        modifier = Modifier
-            .width(120.dp)
-            .height(12.dp)
-            .clip(RoundedCornerShape(6.dp))
-            .background(PicoTheme.colorScheme.fillTertiary),
-    ) {
-        // 0f 宽度的 fillMaxWidth 没必要也没意义，索性整条不画——顺带避开 fraction 为 0 时
-        // 各版本 Compose 对 fillMaxWidth 取值范围的不同处理。
-        if (state.isCharging && state.chargeFraction > 0f) {
-            Box(
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .fillMaxWidth(state.chargeFraction.coerceIn(0.01f, 1f))
-                    .background(Color(rgb[0], rgb[1], rgb[2], 1f)),
-            )
+    val interactionSource = remember { MutableInteractionSource() }
+
+    LaunchedEffect(interactionSource) {
+        interactionSource.interactions.collect { interaction ->
+            when (interaction) {
+                is PressInteraction.Press -> chargeInput.onPressDown()
+                is PressInteraction.Release, is PressInteraction.Cancel -> chargeInput.onPressUp()
+                else -> {}
+            }
+        }
+    }
+    LaunchedEffect(enabled) {
+        if (!enabled) chargeInput.onPressUp()
+    }
+
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            text = "按住蓄力",
+            style = PicoTheme.typography.labelLarge,
+            color = PicoTheme.colorScheme.labelSecondary,
+        )
+        Box(
+            modifier = Modifier
+                .width(160.dp)
+                .height(36.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(PicoTheme.colorScheme.fillTertiary)
+                .clickable(
+                    interactionSource = interactionSource,
+                    indication = null,
+                    enabled = enabled,
+                    onClick = {}, // 真正的逻辑在上面的 interactionSource 收流里，这里只需要注册手势
+                ),
+        ) {
+            // 0f 宽度的 fillMaxWidth 没必要也没意义，索性整条不画——顺带避开 fraction 为 0 时
+            // 各版本 Compose 对 fillMaxWidth 取值范围的不同处理。
+            if (state.isCharging && state.chargeFraction > 0f) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .fillMaxWidth(state.chargeFraction.coerceIn(0.01f, 1f))
+                        .background(Color(rgb[0], rgb[1], rgb[2], 1f)),
+                )
+            }
         }
     }
 }
