@@ -177,7 +177,19 @@ class CharacterController private constructor(
      * falls. `stopAllAnimations()` and `stop()` + `setTime(0f)` were both tried and both left the
      * frog frozen mid-leap — neither re-poses the skeleton — so this closes the playback
      * controller outright to drop the animation binding and let the bind pose (sitting, as the
-     * model rendered before any animation had ever played) take over again. */
+     * model rendered before any animation had ever played) take over again.
+     *
+     * Real-device finding (2026-09-22): the frog can still be seen stuck in a mid-jump-looking
+     * pose after landing/falling, but only inside the volumetric window, never in the immersive
+     * Stage. An experimental fix — waiting one extra tick of the injected clock after `close()`,
+     * on the theory that the window's `delay`-driven clock (unlike the Stage's vsync-tied one)
+     * doesn't give the skinned-mesh renderer a chance to re-sample the now-unbound skeleton
+     * before the caller moves on — was tried and confirmed NOT to change anything on-device.
+     * Reverted rather than left in as an unexplained no-op. The real cause is still unknown;
+     * next things worth checking: whether `jumpPlayback.close()` itself is a no-op / throws
+     * silently in this container, or whether the skinned-mesh entity resolved via
+     * `findSkinnedMeshEntity()` in [playJumpAnimation] is even the same one being rendered once
+     * the whole `sceneRoot` carries a non-1.0 uniform scale (window mode only). */
     private fun resetJumpAnimation() {
         val playback = jumpPlayback ?: return
         Log.e(
