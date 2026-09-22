@@ -65,10 +65,13 @@
                 android:name="pico.spatial.windowcontainer.resizerestriction"
                 android:value="1" />
 
-            <!-- "0": 底板可见 —— 它就是沙盘的桌面，青蛙站在上面。 -->
+            <!-- "1": 底板隐藏 —— 与其它体积窗口项目同步关闭控制器射线悬停高亮条。
+                 之前因为"它就是沙盘的桌面，青蛙站在上面"留着可见；青蛙实际在离散的跳跃
+                 平台（StageVisuals 加载的模型）上落地，不是站在这块系统底板本身，如果
+                 关掉后场景看起来在半空悬浮或缺一块可见地面，这是第一个要检查回退的地方。 -->
             <meta-data
                 android:name="pico.spatial.windowcontainer.volumebasepanel"
-                android:value="0" />
+                android:value="1" />
 
             <!-- "0": 关闭毛玻璃 —— 沙盘要看穿到真实房间。主窗口的毛玻璃只能在 manifest 关，
                  DSL 的 enableMaterialBackground 参数只作用于子窗口。 -->
