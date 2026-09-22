@@ -338,10 +338,26 @@ class StageBoardAnimator(private val clock: HopClock) {
         audio.play()
     }
 
-    /** No animation — used once when a fresh run starts (there is no "materialize" moment at
-     * run start, only between successful jumps). */
+    /** No animation. Originally "used once when a fresh run starts" (there is no "materialize"
+     * moment at run start, only between successful jumps) — but window-mode container switching
+     * (`HopRun.buildScene`) now calls this every time either container's scene is rebuilt, which
+     * includes resuming a run already in progress, not just a true cold start.
+     *
+     * `current`'s position is forced to the anchor origin rather than trusting
+     * `PlacedTransform.of(state.platforms[0])` alone, for the same reason [animateAdvance] forces
+     * it for a freshly-promoted platform: the frog itself always resets to the anchor
+     * (`CharacterController.setIdlePosition(Vector3(0, CHARACTER_GROUND_Y, 0))`), so whatever
+     * platform it is currently standing on must render there too, regardless of that platform's
+     * own `distanceFromPreviousMeters` (which describes how far it was jumped *from its
+     * predecessor*, not its position relative to the frog once it becomes `current`). At a true
+     * cold start this is a no-op — `freshBoardState`'s origin platform already has
+     * `distanceFromPreviousMeters = 0f` — but resuming mid-run after a container switch,
+     * `platforms[0]` carries whatever nonzero distance its own last jump had, and without this
+     * override the plate renders visibly offset from both the anchor and the frog standing on it
+     * (confirmed on-device: the current and next plates appeared overlapping/mispositioned
+     * immediately after switching containers mid-run). */
     fun placeInstant(state: StageBoardState) {
-        currentTransform = PlacedTransform.of(state.platforms[0])
+        currentTransform = PlacedTransform.of(state.platforms[0]).copy(position = Vector3.ZERO)
         nextTransform = PlacedTransform.of(state.platforms[1])
         applyTransform(currentVisual.wrapper, currentTransform)
         applyTransform(nextVisual.wrapper, nextTransform)
