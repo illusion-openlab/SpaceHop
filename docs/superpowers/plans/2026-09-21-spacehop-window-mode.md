@@ -2419,3 +2419,26 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 提醒：真机上 `adb screencap` 是坏的（退出码为 0、产物却是 50 字节错误文本，按 `$?` 判断必被骗），
 真机侧只能靠日志判活，视觉结论依赖用户肉眼。
+
+---
+
+## 真机修复记录（2026-09-22，追加于分支合并之后）
+
+用户装到真机上试玩，报告「窗口里蓄力起跳完全没反应」。排查过程与结论：
+
+- 三处独立诊断（`SpatialView` 自己的 modifier、一个不经过 `AndroidView` 的裸 Compose `Box`、
+  `Augment` 弹层内部）证实：`Modifier.pointerInput`（PICO 的 `detectTapGestures`/
+  `detectSpatialTapGesture`，以及尝试直接引用的 vanilla AndroidX 版本——后者因
+  `androidx.compose.foundation.gestures` 被本项目排除而直接编译不过）在体积 `WindowContainer`
+  的根组合上协程连启动都不会启动。
+- 唯一确认能收到事件的路径：`androidx.compose.foundation.clickable`（`Button` 内部机制），
+  且必须渲染在 `Augment`/`AttachmentPanel` 这类独立弹层里——诊断用的 `clickable` 连续多次点击
+  稳定命中。
+- 修复：蓄力手势从"按住 3D 视图任意位置"改为工具条上的专用「按住蓄力」条形区域，用
+  `clickable(interactionSource, indication=null)` + `MutableInteractionSource` 收
+  `PressInteraction.Press`/`Release`/`Cancel`。`PointerChargeInput` 本身未改动，只换了调用它的
+  手势入口。真机验证：`SpaceHopJump` 日志显示 `trigger=player` 且 `flightDistance` 随蓄力时长
+  变化（非看门狗固定的 `auto-fail` 距离）。
+- Commit：`b337773`。设计文档已同步追记于 `docs/superpowers/specs/2026-09-21-spacehop-window-mode-design.md` §5.2。
+- 工作区记忆：`pointerinput-dead-in-windowcontainer-root.md`（体积窗口根组合上任何裸手势 API
+  都收不到事件，不限于本项目）。

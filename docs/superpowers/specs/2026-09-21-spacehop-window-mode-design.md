@@ -229,6 +229,29 @@ Modifier.pointerInput(enabled) {
 
 - **`ChargeCurve` 两端共用**，同一 `heldMillis → distance` 映射。这是"同一局跨容器"能够成立的前提：手感一致，分数可比。
 
+> **本节第一条设计已被真机证伪，实际实现与此不同（2026-09-22 追记）。**
+>
+> "手势挂在整个 `SpatialView` 上"在真机上完全收不到任何事件——不是瞄不准，是协程连启动都不会
+> 启动。三处独立验证：挂在 `SpatialView` 自己的 modifier 上、挂在一个完全独立不经过
+> `AndroidView` 包装的裸 Compose `Box` 上、挂在 `Augment` 弹层内部，`Modifier.pointerInput`
+> （不管是这里写的 `com.pico.spatial.ui.foundation.gesture.detectTapGestures` 还是尝试直接引用
+> 的 vanilla AndroidX 版本）在体积 `WindowContainer` 的根组合上一律无法启动其协程。运行时自己的
+> 空间手势识别在更底层把触摸事件截去做 3D 实体命中测试，Compose 自己的指针事件管线在这层根本
+> 收不到东西。
+>
+> 唯一确认能收到事件的路径是 SpatialUI 内建组件用的 `androidx.compose.foundation.clickable`
+> （`Button` 内部机制），且必须渲染在 `Augment`/`AttachmentPanel` 这类独立弹层里——已验证连续
+> 多次点击稳定命中。
+>
+> **实际实现**：蓄力手势从"按住 3D 视图任意位置"改为"按住工具条上一个专用条形区域"，用
+> `Modifier.clickable(interactionSource, indication=null)` + `MutableInteractionSource`
+> 收 `PressInteraction.Press`/`Release`/`Cancel` 拿按压时长，而不是本节的 `detectTapGestures` +
+> `onPress`/`tryAwaitRelease()`。`PointerChargeInput` 类本身（`onPressDown`/`onPressUp`/
+> `tickChargeFraction`/`ChargeCurve` 封顶逻辑）未受影响，只是调用它的手势入口换了。
+>
+> 详见 `docs/superpowers/plans/2026-09-21-spacehop-window-mode.md` 结尾的真机修复记录，以及
+> commit `b337773`。工作区记忆：`pointerinput-dead-in-windowcontainer-root.md`。
+
 ### 5.3 HopClock
 
 ```kotlin
