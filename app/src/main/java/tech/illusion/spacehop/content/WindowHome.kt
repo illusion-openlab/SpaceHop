@@ -174,6 +174,10 @@ fun WindowHome() {
     // 「进入沉浸」单独一个弹层，锚在窗口顶部——用户实测反馈：和蓄力条/HUD 挤在底部工具条同一排时
     // 位置太靠近主体画面、容易在按蓄力条时误触到它。挪到顶部之后两者物理上分得足够开，且不挡
     // 视线（沙盘的可视重心在窗口中下部，顶部本来就是留白）。
+    //
+    // HudContent（分数 + 连击）也放在这里，不留在底部工具条：用户反馈连击出现时分数面板会变宽，
+    // 一旦连击变宽/居中的那组内容就会往主体画面方向挤，把青蛙挡住。顶部是已经验证过的"不挡视线"
+    // 安全区，分数面板宽度不管怎么变都不会影响底部的蓄力交互区。
     Augment(
         anchor = NormalizedPoint3D.TopFront,
         alignment = AugmentContentAlignment.TopCenter,
@@ -182,9 +186,15 @@ fun WindowHome() {
         PicoTheme {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(24.dp),
                 modifier = Modifier.padding(12.dp),
             ) {
+                if (HopSession.phase is HopPhase.Playing) {
+                    HudContent(
+                        score = HopSession.runState.score,
+                        comboStreak = HopSession.runState.comboStreak,
+                    )
+                }
                 Button(
                     onClick = {
                         scope.launch {
@@ -239,8 +249,9 @@ fun WindowHome() {
                     )
                     is HopPhase.Playing -> {
                         // 蓄力手势挂在整块面板上，不只是那条细条——用户反馈「只有那一小块能按」
-                        // 手感太窄。这块面板在 Playing 阶段没有任何按钮（HudContent 纯展示、
-                        // ChargeBar 现在也是纯展示），挂在整个 Row 上不会和任何子控件的点击抢事件。
+                        // 手感太窄。HudContent 已经挪去顶部弹层了（见上面那个 Augment 的注释），
+                        // 这块面板在 Playing 阶段只剩蓄力标签 + 蓄力条，没有任何按钮，挂在整个
+                        // Column 上不会和任何子控件的点击抢事件。
                         val interactionSource = remember { MutableInteractionSource() }
                         LaunchedEffect(interactionSource) {
                             interactionSource.interactions.collect { interaction ->
@@ -260,12 +271,8 @@ fun WindowHome() {
                             if (!chargeEnabled) chargeInput.onPressUp()
                         }
 
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            // 分数面板和蓄力条之间的间距故意拉大：用户反馈分数离主体画面太近，
-                            // 拉开间距能让分数（整组居中）自然往左挪、蓄力区往右挪，不用假设
-                            // 窗口的具体像素宽度去做绝对定位。
-                            horizontalArrangement = Arrangement.spacedBy(40.dp),
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier
                                 .clickable(
                                     interactionSource = interactionSource,
@@ -273,22 +280,16 @@ fun WindowHome() {
                                     enabled = chargeEnabled,
                                     onClick = {}, // 真正的逻辑在上面的 interactionSource 收流里
                                 )
-                                .padding(vertical = 8.dp),
+                                .padding(horizontal = 24.dp, vertical = 8.dp),
                         ) {
-                            HudContent(
-                                score = HopSession.runState.score,
-                                comboStreak = HopSession.runState.comboStreak,
+                            Text(
+                                text = "按住蓄力",
+                                style = PicoTheme.typography.labelLarge,
+                                color = PicoTheme.colorScheme.labelSecondary,
                             )
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(
-                                    text = "按住蓄力",
-                                    style = PicoTheme.typography.labelLarge,
-                                    color = PicoTheme.colorScheme.labelSecondary,
-                                )
-                                // 蓄力条本身再往下挪一点，和上面的文字标签拉开——用户反馈的第三条。
-                                Spacer(modifier = Modifier.height(10.dp))
-                                ChargeBar(chargeInput = chargeInput)
-                            }
+                            // 蓄力条本身再往下挪一点，和上面的文字标签拉开——用户反馈的第三条。
+                            Spacer(modifier = Modifier.height(10.dp))
+                            ChargeBar(chargeInput = chargeInput)
                         }
                     }
                 }
